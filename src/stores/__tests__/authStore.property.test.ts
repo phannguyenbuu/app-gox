@@ -3,11 +3,10 @@ import * as fc from 'fast-check';
 import { mockUsers } from '../../api/mockData';
 import type { LoginResult, User } from '../../types/auth';
 
-// Inline login logic without delay — mirrors mockLogin from mockApi
-function loginSync(email: string, password: string): LoginResult {
-  const found = mockUsers.find((u) => u.email === email && u.password === password);
+function loginSync(email: string): LoginResult {
+  const found = mockUsers.find((u) => u.email === email);
   if (!found) {
-    return { success: false, error: 'Email hoặc mật khẩu không đúng' };
+    return { success: false, error: 'Email không tồn tại trong hệ thống' };
   }
   const { password: _, ...user } = found;
   return { success: true, user: user as User };
@@ -26,8 +25,7 @@ function createLocalStorageMock() {
   };
 }
 
-// Valid credentials from mockData (email + password pairs)
-const validCredentials = mockUsers.map((u) => ({ email: u.email, password: u.password, username: u.username }));
+const validEmailsList = mockUsers.map((u) => ({ email: u.email, username: u.username }));
 
 // Set of valid emails for exclusion in Property 3
 const validEmails = new Set(mockUsers.map((u) => u.email));
@@ -47,9 +45,9 @@ describe('Property 2: Đăng nhập hợp lệ trả về đúng user', () => {
   it('Feature: machine-repair-management, Property 2: Đăng nhập hợp lệ trả về đúng user — Validates: Requirements 1.1', () => {
     fc.assert(
       fc.property(
-        fc.constantFrom(...validCredentials),
-        ({ email, password, username }) => {
-          const result = loginSync(email, password);
+        fc.constantFrom(...validEmailsList),
+        ({ email, username }) => {
+          const result = loginSync(email);
           expect(result.success).toBe(true);
           if (result.success) {
             expect(result.user.email).toBe(email);
@@ -80,15 +78,11 @@ describe('Property 3: Đăng nhập không hợp lệ bị từ chối', () => {
       .emailAddress()
       .filter((email) => !validEmails.has(email));
 
-    // Any password
-    const invalidPasswordArb = fc.string({ minLength: 1, maxLength: 30 });
-
     fc.assert(
       fc.property(
         invalidEmailArb,
-        invalidPasswordArb,
-        (email, password) => {
-          const result = loginSync(email, password);
+        (email) => {
+          const result = loginSync(email);
           expect(result.success).toBe(false);
           if (!result.success) {
             expect(typeof result.error).toBe('string');

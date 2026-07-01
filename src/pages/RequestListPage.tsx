@@ -10,6 +10,7 @@ import { ALL_STATUSES, STATUS_LABELS, STATUS_SORT_ORDER } from '../components/re
 import { AnimatedList } from '../components/ui/AnimatedList';
 import { EmptyState, PageLoading } from '../components/ui/PageState';
 import { filterRequests } from '../services/filterService';
+import { showNotification } from '../services/notificationService';
 import { useAuthStore } from '../stores/authStore';
 import { useLocationStore } from '../stores/locationStore';
 import { useRepairStore } from '../stores/repairStore';
@@ -37,7 +38,7 @@ function formatDateTime(value: string): string {
 export function RequestListPage() {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
-  const { requests, loading, fetchRequests, setFilters } = useRepairStore();
+  const { requests, loading, fetchRequests, setFilters, updateStatus } = useRepairStore();
   const { locations, fetchLocations } = useLocationStore();
 
   const [statusFilter, setStatusFilter] = useState<RepairStatus | ''>('');
@@ -243,6 +244,9 @@ export function RequestListPage() {
           <AnimatedList>
             {filteredAndSortedRequests.map((request) => {
               const location = locationMap.get(request.locationId);
+              const canAccept = user != null && request.status === 'new';
+              const canStart = user != null && request.status === 'accepted';
+              const canComplete = user != null && request.status === 'in_progress';
               return (
                 <RequestCard
                   key={request.id}
@@ -256,12 +260,55 @@ export function RequestListPage() {
                   }
                   description={request.description}
                   footer={
-                    <>
+                    <div style={styles.footerRow}>
                       <span style={styles.dateText}>{formatDateTime(request.createdAt)}</span>
                       {request.assignedTo && (
                         <span style={styles.assigneeText}>👤 {mockGetUserName(request.assignedTo)}</span>
                       )}
-                    </>
+                      {(canAccept || canStart || canComplete) && (
+                        <div style={styles.actionRow}>
+                          {canAccept && (
+                            <button
+                              style={styles.actionBtn}
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                const result = await updateStatus(request.id, 'accepted', { assignedTo: user!.id, note: 'Đã tiếp nhận sự cố', joinRepair: true });
+                                if (!result.success) showNotification(result.error ?? 'Không thể cập nhật trạng thái', 'error');
+                              }}
+                              disabled={loading}
+                            >
+                              Tiếp nhận
+                            </button>
+                          )}
+                          {canStart && (
+                            <button
+                              style={styles.actionBtn}
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                const result = await updateStatus(request.id, 'in_progress', { note: 'Đang xử lý' });
+                                if (!result.success) showNotification(result.error ?? 'Không thể cập nhật trạng thái', 'error');
+                              }}
+                              disabled={loading}
+                            >
+                              Xử lý
+                            </button>
+                          )}
+                          {canComplete && (
+                            <button
+                              style={styles.actionBtn}
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                const result = await updateStatus(request.id, 'completed', { completionReport: { description: 'Đã sửa xong và bàn giao', attachments: [] } });
+                                if (!result.success) showNotification(result.error ?? 'Không thể cập nhật trạng thái', 'error');
+                              }}
+                              disabled={loading}
+                            >
+                              Hoàn thành
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   }
                 />
               );
@@ -347,6 +394,29 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '0.75rem',
     color: 'var(--color-secondary)',
     fontWeight: 500,
+  },
+  footerRow: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: '10px',
+    flexWrap: 'wrap',
+  },
+  actionRow: {
+    display: 'flex',
+    gap: '8px',
+    alignItems: 'center',
+    marginLeft: 'auto',
+  },
+  actionBtn: {
+    background: 'none',
+    border: '1px solid var(--color-surface-light)',
+    borderRadius: '8px',
+    padding: '6px 10px',
+    color: 'var(--color-primary)',
+    fontSize: '0.8rem',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
   },
   locationDropdown: {
     position: 'absolute',

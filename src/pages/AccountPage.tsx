@@ -213,7 +213,6 @@ export function AccountPage() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const updateProfile = useAuthStore((s) => s.updateProfile);
-  const changePassword = useAuthStore((s) => s.changePassword);
   const { theme, toggleTheme } = useTheme();
   const { requests, fetchRequests } = useRepairStore();
   const { locations, fetchLocations } = useLocationStore();
@@ -261,15 +260,6 @@ export function AccountPage() {
   const [phone, setPhone] = useState(user?.phone ?? '');
   const [saved, setSaved] = useState(false);
 
-  // Change password
-  const [changingPw, setChangingPw] = useState(false);
-  const [currentPw, setCurrentPw] = useState('');
-  const [newPw, setNewPw] = useState('');
-  const [confirmPw, setConfirmPw] = useState('');
-  const [pwError, setPwError] = useState('');
-  const [pwSuccess, setPwSuccess] = useState(false);
-  const [pwLoading, setPwLoading] = useState(false);
-
   const handleLogout = () => { logout(); navigate('/login'); };
 
   const handleEdit = () => {
@@ -284,29 +274,6 @@ export function AccountPage() {
     setEditing(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
-  };
-
-  const handleChangePw = async () => {
-    setPwError('');
-    if (!currentPw) { setPwError('Vui lòng nhập mật khẩu hiện tại'); return; }
-    if (newPw.length < 6) { setPwError('Mật khẩu mới phải có ít nhất 6 ký tự'); return; }
-    if (newPw !== confirmPw) { setPwError('Mật khẩu xác nhận không khớp'); return; }
-    setPwLoading(true);
-    const result = await changePassword(currentPw, newPw);
-    setPwLoading(false);
-    if (result.success) {
-      setPwSuccess(true);
-      setCurrentPw(''); setNewPw(''); setConfirmPw('');
-      setTimeout(() => { setPwSuccess(false); setChangingPw(false); }, 2000);
-    } else {
-      setPwError(result.error ?? 'Lỗi đổi mật khẩu');
-    }
-  };
-
-  const cancelChangePw = () => {
-    setChangingPw(false);
-    setCurrentPw(''); setNewPw(''); setConfirmPw('');
-    setPwError(''); setPwSuccess(false);
   };
 
   return (
@@ -400,54 +367,6 @@ export function AccountPage() {
             </div>
           </GlowCard>
         )}
-
-        {/* Change Password */}
-        <GlowCard>
-          <div style={styles.sectionHeader}>
-            <h2 style={styles.sectionTitle}>Đổi mật khẩu</h2>
-            {!changingPw && (
-              <button style={styles.editButton} onClick={() => setChangingPw(true)}>🔑 Đổi</button>
-            )}
-          </div>
-
-          {changingPw ? (
-            <div style={styles.editForm}>
-              <div style={styles.field}>
-                <label style={styles.label}>Mật khẩu hiện tại</label>
-                <input type="password" value={currentPw} onChange={(e) => setCurrentPw(e.target.value)}
-                  placeholder="Nhập mật khẩu hiện tại" style={styles.input} autoComplete="current-password" />
-              </div>
-              <div style={styles.field}>
-                <label style={styles.label}>Mật khẩu mới</label>
-                <input type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)}
-                  placeholder="Tối thiểu 6 ký tự" style={styles.input} autoComplete="new-password" />
-              </div>
-              <div style={styles.field}>
-                <label style={styles.label}>Xác nhận mật khẩu mới</label>
-                <input type="password" value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)}
-                  placeholder="Nhập lại mật khẩu mới" style={styles.input} autoComplete="new-password" />
-              </div>
-              {pwError && (
-                <motion.div style={styles.errorBanner} initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}>
-                  {pwError}
-                </motion.div>
-              )}
-              {pwSuccess && (
-                <motion.div style={styles.successBanner} initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}>
-                  ✅ Đổi mật khẩu thành công
-                </motion.div>
-              )}
-              <div style={styles.editActions}>
-                <AnimatedButton onClick={handleChangePw} disabled={pwLoading}>
-                  {pwLoading ? 'Đang xử lý...' : 'Xác nhận'}
-                </AnimatedButton>
-                <AnimatedButton variant="secondary" onClick={cancelChangePw} disabled={pwLoading}>Hủy</AnimatedButton>
-              </div>
-            </div>
-          ) : (
-            <p style={styles.pwHint}>Mật khẩu được bảo mật. Nhấn "Đổi" để thay đổi.</p>
-          )}
-        </GlowCard>
 
         {/* Theme Toggle */}
         <GlowCard>

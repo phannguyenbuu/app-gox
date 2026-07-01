@@ -6,16 +6,18 @@ import type {
   Priority,
   Attachment,
 } from '../types/repair';
-import { mockGetRequests, mockCreateRequest, mockUpdateStatus } from '../api/mockApi';
+import { apiIncidentAddNote, apiIncidentUpdateStatus, mockGetRequestById, mockGetRequests, mockCreateRequest, mockUpdateStatus } from '../api/mockApi';
 import { validateRepairRequest, validateProgressNote } from '../services/validation';
 import { transitionStatus } from '../services/repairStateMachine';
 import { notifyStatusChange } from '../services/notificationService';
+import { useAuthStore } from './authStore';
 
 interface RepairStore {
   requests: RepairRequest[];
   filters: RepairRequestFilters;
   loading: boolean;
   error: string | null;
+  ensureRequestLoaded: (requestId: string) => Promise<RepairRequest | null>;
   fetchRequests: (filters?: RepairRequestFilters) => Promise<void>;
   createRequest: (data: {
     machineName: string;
@@ -52,11 +54,32 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
   loading: false,
   error: null,
 
+  ensureRequestLoaded: async (requestId: string): Promise<RepairRequest | null> => {
+    const existing = get().requests.find((r) => r.id === requestId);
+    if (existing) return existing;
+
+    const email = useAuthStore.getState().user?.email;
+    if (!email) return null;
+
+    try {
+      const fetched = await mockGetRequestById(requestId, email);
+      if (!fetched) return null;
+      set((state) => {
+        if (state.requests.some((r) => r.id === requestId)) return state;
+        return { ...state, requests: [fetched, ...state.requests] };
+      });
+      return fetched;
+    } catch {
+      return null;
+    }
+  },
+
   fetchRequests: async (filters?: RepairRequestFilters) => {
     set({ loading: true, error: null });
     try {
       const activeFilters = filters ?? get().filters;
-      const requests = await mockGetRequests(activeFilters);
+      const email = useAuthStore.getState().user?.email;
+      const requests = await mockGetRequests(activeFilters, email);
       set({ requests, loading: false });
     } catch (e: any) {
       set({ error: e.message ?? 'Lỗi khi tải danh sách yêu cầu', loading: false });
@@ -92,7 +115,10 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
   },
 
   updateStatus: async (requestId, newStatus, data) => {
-    const request = get().requests.find((r) => r.id === requestId);
+    let request: RepairRequest | undefined = get().requests.find((r) => r.id === requestId);
+    if (!request) {
+      request = (await get().ensureRequestLoaded(requestId)) ?? undefined;
+    }
     if (!request) {
       return { success: false, error: 'Không tìm thấy yêu cầu' };
     }
@@ -104,9 +130,45 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
 
     set({ loading: true, error: null });
     try {
-      const updated = await mockUpdateStatus(requestId, newStatus, data);
+      const email = useAuthStore.getState().user?.email;
+      let updated = result.request;
+
+      if (email && (newStatus === 'accepted' || newStatus === 'in_progress' || newStatus === 'completed')) {
+        const now = new Date().toISOString();
+        const statusSlug =
+          newStatus === 'accepted' ? 'selected'
+            : newStatus === 'in_progress' ? 'in-progress'
+              : 'done';
+
+        const note =
+          typeof data?.note === 'string' ? data.note
+            : typeof data?.progressNote === 'string' ? data.progressNote
+              : typeof data?.completionReport?.description === 'string' ? data.completionReport.description
+                : undefined;
+
+        await apiIncidentUpdateStatus({
+          email,
+          task_id: String(requestId),
+          status: statusSlug,
+          note,
+          join_repair: newStatus === 'accepted' ? true : undefined,
+          completed_at: newStatus === 'completed' ? now : undefined,
+        });
+
+        updated = {
+          ...updated,
+          acceptedAt: newStatus === 'accepted' ? now : updated.acceptedAt,
+          completedAt: newStatus === 'completed' ? now : updated.completedAt,
+          updatedAt: now,
+        };
+      } else {
+        updated = await mockUpdateStatus(requestId, newStatus, data);
+      }
+
       set((state) => ({
-        requests: state.requests.map((r) => (r.id === requestId ? updated : r)),
+        requests: state.requests.some((r) => r.id === requestId)
+          ? state.requests.map((r) => (r.id === requestId ? updated : r))
+          : [updated, ...state.requests],
         loading: false,
       }));
       notifyStatusChange(request.status, newStatus);
@@ -123,36 +185,57 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
       return { success: false, error: noteValidation.errors.join(', ') };
     }
 
-    const request = get().requests.find((r) => r.id === requestId);
+    let request: RepairRequest | undefined = get().requests.find((r) => r.id === requestId);
+    if (!request) {
+      request = (await get().ensureRequestLoaded(requestId)) ?? undefined;
+    }
     if (!request) {
       return { success: false, error: 'Không tìm thấy yêu cầu' };
     }
 
-    // Transition to in_progress (accepted→in_progress or in_progress→in_progress)
-    const targetStatus: RepairStatus = 'in_progress';
-    const transitionData = {
-      progressNote: note,
-      progressNoteCreatedBy: createdBy,
-    };
-
-    const result = transitionStatus(request, targetStatus, transitionData);
-    if (!result.success) {
-      return { success: false, error: result.error };
-    }
-
     set({ loading: true, error: null });
     try {
-      const updated = await mockUpdateStatus(requestId, targetStatus, {
-        progressNote: note,
-        progressNoteImages: images,
-        progressNoteCreatedBy: createdBy,
-        assignedTo: request.assignedTo ?? createdBy,
-      });
+      const email = useAuthStore.getState().user?.email;
+      const now = new Date().toISOString();
+      let updated = request;
+
+      if (email) {
+        await apiIncidentAddNote({
+          email,
+          task_id: String(requestId),
+          note,
+          images,
+        });
+
+        const progressNote = {
+          id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          note,
+          images,
+          createdBy,
+          createdAt: now,
+        };
+
+        updated = {
+          ...request,
+          progressNotes: [...request.progressNotes, progressNote],
+          updatedAt: now,
+        };
+      } else {
+        const targetStatus: RepairStatus = 'in_progress';
+        updated = await mockUpdateStatus(requestId, targetStatus, {
+          progressNote: note,
+          progressNoteImages: images,
+          progressNoteCreatedBy: createdBy,
+          assignedTo: request.assignedTo ?? createdBy,
+        });
+      }
+
       set((state) => ({
-        requests: state.requests.map((r) => (r.id === requestId ? updated : r)),
+        requests: state.requests.some((r) => r.id === requestId)
+          ? state.requests.map((r) => (r.id === requestId ? updated : r))
+          : [updated, ...state.requests],
         loading: false,
       }));
-      notifyStatusChange(request.status, targetStatus);
       return { success: true };
     } catch (e: any) {
       set({ error: e.message ?? 'Lỗi khi thêm ghi chú', loading: false });
@@ -161,7 +244,10 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
   },
 
   completeRequest: async (requestId, report) => {
-    const request = get().requests.find((r) => r.id === requestId);
+    let request: RepairRequest | undefined = get().requests.find((r) => r.id === requestId);
+    if (!request) {
+      request = (await get().ensureRequestLoaded(requestId)) ?? undefined;
+    }
     if (!request) {
       return { success: false, error: 'Không tìm thấy yêu cầu' };
     }
@@ -175,11 +261,30 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
 
     set({ loading: true, error: null });
     try {
-      const updated = await mockUpdateStatus(requestId, 'completed', {
-        completionReport: { description: report.description, laborCost: report.laborCost },
-      });
+      const email = useAuthStore.getState().user?.email;
+      const now = new Date().toISOString();
+      let updated = result.request;
+
+      if (email) {
+        await apiIncidentUpdateStatus({
+          email,
+          task_id: String(requestId),
+          status: 'done',
+          completion_note: report.description,
+          labor_cost: report.laborCost,
+          completed_at: now,
+        });
+        updated = { ...updated, completedAt: now, updatedAt: now };
+      } else {
+        updated = await mockUpdateStatus(requestId, 'completed', {
+          completionReport: { description: report.description, laborCost: report.laborCost },
+        });
+      }
+
       set((state) => ({
-        requests: state.requests.map((r) => (r.id === requestId ? updated : r)),
+        requests: state.requests.some((r) => r.id === requestId)
+          ? state.requests.map((r) => (r.id === requestId ? updated : r))
+          : [updated, ...state.requests],
         loading: false,
       }));
       notifyStatusChange(request.status, 'completed');

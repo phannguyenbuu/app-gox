@@ -102,8 +102,9 @@ export function ProtectedRoute({ allowedRoles }: ProtectedRouteProps) {
     return <Navigate to="/login" replace />;
   }
 
-  // Must select workspace before accessing app pages
-  if (!hasSelection) {
+  const mustSelectWorkspace = Boolean(user?.workspaceIds && user.workspaceIds.length > 0);
+
+  if (mustSelectWorkspace && !hasSelection) {
     return <Navigate to="/workspace" replace />;
   }
 

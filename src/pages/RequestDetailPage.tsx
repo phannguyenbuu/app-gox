@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import { useRepairStore } from '../stores/repairStore';
 import { useAuthStore } from '../stores/authStore';
 import { useMaterialStore } from '../stores/materialStore';
-import { mockGetRequestById, mockGetUserName, mockGetUserPhone } from '../api/mockApi';
+import { apiIncidentAddMaterial, mockGetRequestById, mockGetUserName, mockGetUserPhone } from '../api/mockApi';
 import { useLocationStore } from '../stores/locationStore';
 import { PriorityBadge } from '../components/requests/PriorityBadge';
 import { StatusBadge } from '../components/requests/StatusBadge';
@@ -61,7 +61,7 @@ export function RequestDetailPage() {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const { requests, updateStatus, addProgressNote, completeRequest } = useRepairStore();
-  const { materials, totalCost, setMaterials, addMaterial, updateMaterial, removeMaterial } = useMaterialStore();
+  const { materials, setMaterials, addMaterial, updateMaterial, removeMaterial } = useMaterialStore();
   const { locations, fetchLocations } = useLocationStore();
 
   const [request, setRequest] = useState<RepairRequest | null>(null);
@@ -86,6 +86,15 @@ export function RequestDetailPage() {
   const [reportLaborCost, setReportLaborCost] = useState('');
   const [reportError, setReportError] = useState('');
 
+  const displayMaterials = useMemo(() => {
+    if (materials.length > 0) return materials;
+    return request?.materials ?? [];
+  }, [materials, request]);
+
+  const displayMaterialTotalCost = useMemo(() => {
+    return displayMaterials.reduce((sum, m) => sum + m.quantity * m.unitPrice, 0);
+  }, [displayMaterials]);
+
   // Fetch request data
   useEffect(() => {
     fetchLocations();
@@ -93,7 +102,7 @@ export function RequestDetailPage() {
       if (!id) return;
       setLoading(true);
       try {
-        const data = await mockGetRequestById(id);
+        const data = await mockGetRequestById(id, user?.email);
         if (data) {
           setRequest(data);
           setMaterials(data.materials ?? []);
@@ -103,7 +112,7 @@ export function RequestDetailPage() {
       }
     }
     loadRequest();
-  }, [id, setMaterials]);
+  }, [fetchLocations, id, setMaterials, user?.email]);
 
   // Resolve location info
   const requestLocation = useMemo(() => {
@@ -122,6 +131,7 @@ export function RequestDetailPage() {
   }, [requests, id, setMaterials]);
 
   const canAccept = request?.status === 'new';
+  const canStartProcessing = request?.status === 'accepted' && user != null;
   const canAddProgress = (request?.status === 'accepted' || request?.status === 'in_progress');
   const canComplete = request?.status === 'in_progress';
   const canCancel = request?.status === 'new' && user?.role !== 'technician';
@@ -178,6 +188,20 @@ export function RequestDetailPage() {
     setActionLoading(false);
   }, [request, updateStatus]);
 
+  const handleStartProcessing = useCallback(async () => {
+    if (!request || !user) return;
+    setActionLoading(true);
+    setActionError('');
+    const result = await updateStatus(request.id, 'in_progress', {
+      note: 'Đang xử lý',
+      progressNote: 'Đang xử lý',
+      progressNoteCreatedBy: user.id,
+      assignedTo: request.assignedTo ?? user.id,
+    });
+    if (!result.success) setActionError(result.error ?? 'Lỗi khi chuyển sang đang xử lý');
+    setActionLoading(false);
+  }, [request, user, updateStatus]);
+
   const handleAddNote = useCallback(async () => {
     if (!request || !user) return;
     setNoteError('');
@@ -213,7 +237,7 @@ export function RequestDetailPage() {
     setNoteImages((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
-  const handleAddMaterial = useCallback(() => {
+  const handleAddMaterial = useCallback(async () => {
     setMaterialErrors([]);
     const qty = Number(materialQuantity);
     const price = Number(materialUnitPrice);
@@ -241,6 +265,27 @@ export function RequestDetailPage() {
       }
       setEditingMaterialId(null);
     } else {
+      if (user?.email) {
+        try {
+          setActionLoading(true);
+          await apiIncidentAddMaterial({
+            email: user.email,
+            task_id: String(request?.id ?? ''),
+            material_name: materialName.trim(),
+            quantity: qty,
+            unit: 'cái',
+            unit_price: price,
+            note: '',
+          });
+        } catch (e: any) {
+          setMaterialErrors([e?.message ?? 'Lỗi khi thêm vật tư']);
+          setActionLoading(false);
+          return;
+        } finally {
+          setActionLoading(false);
+        }
+      }
+
       const result = addMaterial({
         repairRequestId: request?.id ?? '',
         name: materialName.trim(),
@@ -256,7 +301,7 @@ export function RequestDetailPage() {
     setMaterialName('');
     setMaterialQuantity('');
     setMaterialUnitPrice('');
-  }, [materialName, materialQuantity, materialUnitPrice, editingMaterialId, request, addMaterial, updateMaterial]);
+  }, [materialName, materialQuantity, materialUnitPrice, editingMaterialId, request, addMaterial, updateMaterial, user?.email]);
 
   const handleEditMaterial = useCallback((mat: { id: string; name: string; quantity: number; unitPrice: number }) => {
     setEditingMaterialId(mat.id);
@@ -491,11 +536,16 @@ export function RequestDetailPage() {
       </GlowCard>
 
       {/* 4. Action Buttons */}
-      {(canAccept || canCancel) && (
+      {(canAccept || canCancel || canStartProcessing) && (
         <div style={styles.actionRow}>
           {canAccept && (
             <AnimatedButton onClick={handleAccept} disabled={actionLoading}>
               Tiếp nhận yêu cầu
+            </AnimatedButton>
+          )}
+          {canStartProcessing && (
+            <AnimatedButton onClick={handleStartProcessing} disabled={actionLoading} variant="secondary">
+              Đang xử lý
             </AnimatedButton>
           )}
           {canCancel && (
@@ -610,12 +660,12 @@ export function RequestDetailPage() {
       {/* 6. Materials Section */}
       <GlowCard>
         <h2 style={styles.sectionTitle}>Vật tư thay thế</h2>
-        {materials.length === 0 ? (
+        {displayMaterials.length === 0 ? (
           <p style={styles.emptyText}>Chưa có vật tư nào.</p>
         ) : (
           <>
             <AnimatedList>
-              {materials.map((mat) => (
+              {displayMaterials.map((mat) => (
                 <div key={mat.id} style={styles.materialItem}>
                   <div style={styles.materialInfo}>
                     <span style={styles.materialName}>{mat.name}</span>
@@ -646,7 +696,7 @@ export function RequestDetailPage() {
             </AnimatedList>
             <div style={styles.totalCostRow}>
               <span style={styles.totalCostLabel}>Tổng chi phí vật tư:</span>
-              <span style={styles.totalCostValue}>{formatCurrency(totalCost)}</span>
+              <span style={styles.totalCostValue}>{formatCurrency(displayMaterialTotalCost)}</span>
             </div>
           </>
         )}

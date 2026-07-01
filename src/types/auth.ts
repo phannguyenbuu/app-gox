@@ -25,8 +25,7 @@ export interface AuthState {
   user: User | null;
   token: string | null;
   isAuthenticated: boolean;
-  login: (email: string, password: string) => Promise<LoginResult>;
-  register: (email: string, password: string, fullName: string) => Promise<LoginResult>;
+  login: (email: string) => Promise<LoginResult>;
   logout: () => void;
 }
 
