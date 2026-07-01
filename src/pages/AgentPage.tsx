@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { GlowCard } from '../components/ui/GlowCard';
 import { AnimatedList } from '../components/ui/AnimatedList';
@@ -20,6 +20,7 @@ import {
   triggerAgentUtility,
   getAgentUtilityCommands,
   triggerAgentUtilityExec,
+  triggerEmergencyRestart,
 } from '../api/mockAgentApi';
 import type { LanSiteInfo } from '../api/mockAgentApi';
 
@@ -121,13 +122,51 @@ export function AgentPage() {
   // Live (uncached) address books loaded from agents (key: printerId)
   const [liveAddressBooks, setLiveAddressBooks] = useState<Record<string, any>>({});
 
+  // Register parent window dummy functions for Ricoh iframe scripts
+  useEffect(() => {
+    (window as any).fnGetCookie = (_name?: string) => {
+      return '';
+    };
+    (window as any).fnSetCookie = (_name?: string, _value?: string) => {
+      // Dummy
+    };
+    (window as any).fnGetLocalestring = (_key?: string) => {
+      return '';
+    };
+    (window as any).fnGetHelp = (_url?: string) => {
+      // Dummy
+    };
+  }, []);
+
   // Toast notifications
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   // Modals
-  const [activeModal, setActiveModal] = useState<'storage' | 'public_ftp' | 'private_ftp' | 'info_detail' | 'ftp_detail' | 'utilities' | 'edit_ip' | null>(null);
+  const [activeModal, setActiveModal] = useState<'storage' | 'public_ftp' | 'private_ftp' | 'info_detail' | 'ftp_detail' | 'utilities' | 'edit_ip' | 'remote_lock' | null>(null);
   const [selectedUtilityAgent, setSelectedUtilityAgent] = useState<any | null>(null);
   const [ftpDetailData, setFtpDetailData] = useState<{ port: string | number; path: string; error?: string } | null>(null);
+  const [remoteLockPrinter, setRemoteLockPrinter] = useState<{ ip: string; name: string; id: string | number; agentUid: string } | null>(null);
+  const [webPreviewModal, setWebPreviewModal] = useState<{ isOpen: boolean; title: string; html: string; ip: string; path: string; agentUid: string; url?: string } | null>(null);
+  const [webPreviewLoading, setWebPreviewLoading] = useState<boolean>(false);
+  const [directLan, setDirectLan] = useState<boolean>(() => {
+    return localStorage.getItem('goxprint_direct_lan') === 'true';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('goxprint_direct_lan', String(directLan));
+  }, [directLan]);
+
+  const [webPreviewTab, setWebPreviewTab] = useState<'iframe' | 'html'>('iframe');
+  const [showPreviewDetails, setShowPreviewDetails] = useState<boolean>(() => {
+    return window.innerWidth >= 768;
+  });
+  const [webPreviewHistory, setWebPreviewHistory] = useState<string[]>([]);
+  const [webPreviewHistoryIndex, setWebPreviewHistoryIndex] = useState<number>(-1);
+  const [previewBlobUrl, setPreviewBlobUrl] = useState<string>('');
+  const [scaleX, setScaleX] = useState<number>(0.95);
+  const [scaleY, setScaleY] = useState<number>(0.95);
+  const [lockAspect, setLockAspect] = useState<boolean>(true);
+  const previewIframeRef = useRef<HTMLIFrameElement>(null);
   const [editIpModalData, setEditIpModalData] = useState<{
     printerId: string;
     entry: any;
@@ -148,13 +187,30 @@ export function AgentPage() {
     onConfirm: () => {},
   });
 
+  // IP Input Modal state
+  const [ipInputModal, setIpInputModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    hint: string;
+    value: string;
+    error: string;
+    onConfirm: (ip: string) => void;
+  }>({
+    isOpen: false,
+    title: '🌐 Đổi địa chỉ IP tĩnh',
+    hint: 'Nhập địa chỉ IPv4 tĩnh muốn gán cho máy Agent.',
+    value: '192.168.1.12',
+    error: '',
+    onConfirm: () => {},
+  });
+
   // Storage Modal states
   const [storageModalData, setStorageModalData] = useState<{ lanUid: string; email: string }>({ lanUid: '', email: '' });
   const [storageFiles, setStorageFiles] = useState<any[]>([]);
   const [storageLoading, setStorageLoading] = useState(false);
 
   // Add Public FTP states
-  const [publicFtpData, setPublicFtpData] = useState<{ printerId: string; email: string; agentUid: string }>({ printerId: '', email: '', agentUid: '' });
+  const [publicFtpData, setPublicFtpData] = useState<{ printerId: string; name: string; email: string; agentUid: string }>({ printerId: '', name: '', email: '', agentUid: '' });
   const [publicFtpLoading, setPublicFtpLoading] = useState(false);
 
   // Add Private FTP states
@@ -196,6 +252,622 @@ export function AgentPage() {
       { id: fixedId, message, type }
     ]);
   }, []);
+
+  const resolveRelativePath = (relative: string, current: string) => {
+    if (relative.startsWith('http://') || relative.startsWith('https://') || relative.startsWith('data:')) {
+      try {
+        const parsed = new URL(relative);
+        return parsed.pathname + parsed.search;
+      } catch {
+        return relative;
+      }
+    }
+    
+    if (relative.startsWith('/')) {
+      return relative;
+    }
+    
+    const baseClean = current.split('?')[0];
+    const parts = baseClean.split('/');
+    parts.pop(); // remove filename
+    const baseDir = parts.join('/');
+    
+    const resolved = baseDir + '/' + relative;
+    try {
+      const urlObj = new URL(resolved, 'http://localhost');
+      return urlObj.pathname + urlObj.search;
+    } catch {
+      return resolved;
+    }
+  };
+
+  const fetchRemotePage = async (
+    printerIp: string,
+    targetPath: string,
+    _method: string = 'GET',
+    _postData?: any,
+    _isHistoryNav: boolean = false,
+    agentUidParam?: string
+  ) => {
+    const activeAgentUid = agentUidParam || webPreviewModal?.agentUid;
+    if (!activeAgentUid) {
+      console.error('No agent UID available for remote page fetch');
+      return;
+    }
+    
+    setWebPreviewModal({
+      isOpen: true,
+      title: 'Thiết lập kết nối an toàn - ' + printerIp,
+      ip: printerIp,
+      agentUid: activeAgentUid,
+      html: 'LOADING',
+      path: targetPath || ''
+    });
+    setWebPreviewLoading(true);
+
+    if (directLan) {
+      setWebPreviewModal({
+        isOpen: true,
+        title: 'Kết nối trực tiếp LAN - ' + printerIp,
+        ip: printerIp,
+        agentUid: activeAgentUid,
+        html: 'DIRECT_LAN',
+        path: targetPath || ''
+      });
+      setWebPreviewLoading(false);
+      return;
+    }
+
+    try {
+      const response = await fetch(`${BASE_URL}/api/agents/${activeAgentUid}/tunnel/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ printer_ip: printerIp, printer_port: 80 })
+      });
+      const data = await response.json();
+      if (data.ok && data.url) {
+        setWebPreviewModal({
+          isOpen: true,
+          title: 'Kết nối Máy photocopy - ' + printerIp,
+          ip: printerIp,
+          agentUid: activeAgentUid,
+          html: 'TUNNEL_CONNECTED',
+          path: targetPath || '',
+          url: data.url
+        });
+      } else {
+        setWebPreviewModal({
+          isOpen: true,
+          title: 'Kết nối lỗi - ' + printerIp,
+          ip: printerIp,
+          agentUid: activeAgentUid,
+          html: 'ERROR: ' + (data.error || 'Không thể khởi động đường hầm SSH ngược trên Agent'),
+          path: targetPath || ''
+        });
+      }
+    } catch (err: any) {
+      setWebPreviewModal({
+        isOpen: true,
+        title: 'Kết nối lỗi - ' + printerIp,
+        ip: printerIp,
+        agentUid: activeAgentUid,
+        html: 'ERROR: Lỗi hệ thống VPS: ' + (err.message || err),
+        path: targetPath || ''
+      });
+    } finally {
+      setWebPreviewLoading(false);
+    }
+  };
+
+  /* const fetchRemotePageOld = async (
+    printerIp: string,
+    targetPath: string,
+    method: string = 'GET',
+    postData?: any,
+    isHistoryNav: boolean = false,
+    agentUidParam?: string
+  ) => {
+    const activeAgentUid = agentUidParam || webPreviewModal?.agentUid;
+    if (!activeAgentUid) {
+      console.error('No agent UID available for remote page fetch');
+      return;
+    }
+    
+    setWebPreviewModal(prev => {
+      const isFirstLoad = !prev || prev.html === 'LOADING';
+      return {
+        isOpen: true,
+        title: prev?.title || ('Web Image Monitor - ' + printerIp),
+        html: isFirstLoad ? 'LOADING' : prev.html,
+        ip: printerIp,
+        path: targetPath,
+        agentUid: activeAgentUid
+      };
+    });
+    if (directLan) {
+      setWebPreviewModal(prev => {
+        return {
+          isOpen: true,
+          title: prev?.title || ('Web Image Monitor (LAN) - ' + printerIp),
+          html: 'DIRECT_LAN',
+          ip: printerIp,
+          path: targetPath,
+          agentUid: activeAgentUid
+        };
+      });
+      setWebPreviewLoading(false);
+      return;
+    }
+
+    setWebPreviewLoading(true);
+
+    try {
+      const base64Data = postData ? btoa(JSON.stringify(postData)) : '';
+      const script = `target_ip = '${printerIp}'\ntarget_path = '${targetPath}'\ntarget_method = '${method}'\ntarget_data = '${base64Data}'`;
+      
+      const res: any = await triggerAgentUtilityExec(activeAgentUid, 'open_web_setting', script);
+      if (!res.ok || !res.command_id) {
+        setWebPreviewModal(prev => prev ? { ...prev, html: `ERROR: ${res.error || 'Không thể tạo lệnh tiện ích'}` } : null);
+        setWebPreviewLoading(false);
+        return;
+      }
+
+      const commandId = res.command_id;
+      const maxPollMs = 60000;
+      const startTime = Date.now();
+      
+      const pollTimer = setInterval(async () => {
+        try {
+          const elapsed = Date.now() - startTime;
+          if (elapsed > maxPollMs) {
+            clearInterval(pollTimer);
+            setWebPreviewModal(prev => prev ? { ...prev, html: 'ERROR: Yêu cầu quá thời gian chờ (60s)' } : null);
+            return;
+          }
+
+          const statusRes = await getCommandStatus(commandId);
+          if (statusRes.status === 'success') {
+            clearInterval(pollTimer);
+            let parsedRes: any = {};
+            try {
+              let raw = statusRes.result_payload || statusRes.error || '';
+              if (typeof raw === 'string') {
+                raw = raw.trim();
+                if (raw.startsWith('"') && raw.endsWith('"')) {
+                  try {
+                    raw = JSON.parse(raw);
+                  } catch {}
+                }
+                parsedRes = JSON.parse(raw);
+              } else {
+                parsedRes = raw;
+              }
+            } catch (parseErr) {
+              parsedRes = { error: 'Lỗi parse JSON: ' + (statusRes.result_payload || statusRes.error) };
+            }
+
+            if (parsedRes.html) {
+              let rawHtml = parsedRes.html;
+              const returnedPath = parsedRes.path || targetPath;
+
+              let preparedHtml = rawHtml;
+
+              // 1. Strip render-blocking stylesheets and external scripts to prevent the browser from freezing on unreachable IP assets
+              preparedHtml = preparedHtml.replace(/<link[^>]*rel=["']stylesheet["'][^>]*>/gi, '');
+              preparedHtml = preparedHtml.replace(/<script[^>]*src=[^>]*><\/script>/gi, '');
+              preparedHtml = preparedHtml.replace(/<script[^>]*src=[^>]*\s*\/>/gi, '');
+
+              // 2. Insert base tag, CDN jQuery, and top-level fallbacks to prevent ReferenceErrors from executing inline scripts early
+              const fallbacks = `
+                <script>
+                  // Toshiba fallbacks
+                  window.fnGetLocaleString = window.fnGetLocaleString || function(id, defaultVal) { return defaultVal || id || ""; };
+                  window.fnGetResolveLocaleForDisplay = window.fnGetResolveLocaleForDisplay || function(id, defaultVal) { return defaultVal || id || ""; };
+                  window.fnGetResolveLocale = window.fnGetResolveLocale || function(id, defaultVal) { return defaultVal || id || ""; };
+                  window.fnGetLocale = window.fnGetLocale || function(id, defaultVal) { return defaultVal || id || ""; };
+                  window.InitiateServerRequest = window.InitiateServerRequest || function() {};
+
+                  // Ricoh fallbacks
+                  window.mouseOverTransfer = window.mouseOverTransfer || function() {};
+                  window.mouseOutTransfer = window.mouseOutTransfer || function() {};
+                  window.menuParent_Mouseover = window.menuParent_Mouseover || function() {};
+                  window.menuParent_Mouseout = window.menuParent_Mouseout || function() {};
+                  window.menuChild_Mouseover = window.menuChild_Mouseover || function() {};
+                  window.menuChild_Mouseout = window.menuChild_Mouseout || function() {};
+
+                  // Override navigation functions
+                  window.wsMenu_jumpUrl = window.wsMenu_jumpurl = window.wsMenu_jumpURL = function(url) {
+                    window.parent.postMessage({
+                      type: 'iframe_navigate',
+                      href: url,
+                      currentPath: ${JSON.stringify(returnedPath)},
+                      target: '_self'
+                    }, '*');
+                  };
+                  window.jumpTo = function(url) {
+                    window.parent.postMessage({
+                      type: 'iframe_navigate',
+                      href: url,
+                      currentPath: ${JSON.stringify(returnedPath)},
+                      target: '_self'
+                    }, '*');
+                  };
+                </script>
+              `;
+              const jqueryCdn = `<script src="https://code.jquery.com/jquery-1.4.4.min.js"></script>`;
+              const baseTag = `<base href="http://${printerIp}/">${jqueryCdn}${fallbacks}`;
+              if (/<head[^>]*>/i.test(preparedHtml)) {
+                preparedHtml = preparedHtml.replace(/<head([^>]*)>/i, `<head$1>${baseTag}`);
+              } else {
+                preparedHtml = `${baseTag}${preparedHtml}`;
+              }
+
+              const customStyle = `
+                <style>
+                  body {
+                    font-family: system-ui, -apple-system, sans-serif;
+                    color: #1e293b;
+                    background-color: #f8fafc;
+                    margin: 20px;
+                    line-height: 1.5;
+                  }
+                  a {
+                    color: #2563eb;
+                    text-decoration: none;
+                    font-weight: 500;
+                  }
+                  a:hover {
+                    text-decoration: underline;
+                  }
+                  ul {
+                    padding-left: 20px;
+                  }
+                  li {
+                    margin-bottom: 6px;
+                  }
+                  table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin: 15px 0;
+                    background: white;
+                    border-radius: 8px;
+                    overflow: hidden;
+                    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+                  }
+                  th, td {
+                    padding: 10px 14px;
+                    border: 1px solid #e2e8f0;
+                    text-align: left;
+                  }
+                  th {
+                    background-color: #f1f5f9;
+                    font-weight: 600;
+                  }
+                  input[type="text"], input[type="password"], select, textarea {
+                    padding: 8px 12px;
+                    border: 1px solid #cbd5e1;
+                    border-radius: 6px;
+                    font-size: 0.9rem;
+                    background: white;
+                  }
+                  input[type="submit"], input[type="button"], button {
+                    background-color: #2563eb;
+                    color: white;
+                    border: none;
+                    padding: 8px 16px;
+                    border-radius: 6px;
+                    font-weight: 500;
+                    cursor: pointer;
+                  }
+                  input[type="submit"]:hover, button:hover {
+                    background-color: #1d4ed8;
+                  }
+                  #shortcutlink, #topwrap form, select[name="language"], input[name="switch"] {
+                    display: inline-block;
+                    margin-right: 10px;
+                  }
+                  #sideColumn ul {
+                    list-style: none;
+                    padding: 0;
+                    margin: 0;
+                  }
+                  #sideColumn > div > ul > li {
+                    background: #e2e8f0;
+                    margin-bottom: 10px;
+                    padding: 10px;
+                    border-radius: 8px;
+                    font-weight: bold;
+                  }
+                  #sideColumn .submenu {
+                    font-weight: normal;
+                    margin-top: 6px;
+                    padding-left: 10px;
+                    background: #f1f5f9;
+                    border-radius: 6px;
+                    padding: 6px;
+                  }
+                  #sideColumn .submenu li {
+                    margin: 4px 0;
+                  }
+                  .display-n {
+                    display: block !important;
+                  }
+                </style>
+              `;
+
+              if (preparedHtml.includes('</head>')) {
+                preparedHtml = preparedHtml.replace('</head>', `${customStyle}</head>`);
+              } else {
+                preparedHtml = customStyle + preparedHtml;
+              }
+
+              const injectScript = `
+                <script>
+                (function() {
+                  // Register dummy fallback locale functions for Toshiba printers
+                  window.fnGetLocaleString = window.fnGetLocaleString || function(id, defaultVal) {
+                    return defaultVal || id || "";
+                  };
+                  window.fnGetResolveLocaleForDisplay = window.fnGetResolveLocaleForDisplay || function(id, defaultVal) {
+                    return defaultVal || id || "";
+                  };
+                  window.fnGetResolveLocale = window.fnGetResolveLocale || function(id, defaultVal) {
+                    return defaultVal || id || "";
+                  };
+                  window.fnGetLocale = window.fnGetLocale || function(id, defaultVal) {
+                    return defaultVal || id || "";
+                  };
+
+                  // Register dummy fallback menu/hover functions for Ricoh printers
+                  window.mouseOverTransfer = window.mouseOverTransfer || function() {};
+                  window.mouseOutTransfer = window.mouseOutTransfer || function() {};
+                  window.menuParent_Mouseover = window.menuParent_Mouseover || function() {};
+                  window.menuParent_Mouseout = window.menuParent_Mouseout || function() {};
+                  window.menuChild_Mouseover = window.menuChild_Mouseover || function() {};
+                  window.menuChild_Mouseout = window.menuChild_Mouseout || function() {};
+
+                  // Redefine Ricoh menu navigation functions
+                  window.wsMenu_jumpUrl = window.wsMenu_jumpurl = window.wsMenu_jumpURL = function(url) {
+                    window.parent.postMessage({
+                      type: 'iframe_navigate',
+                      href: url,
+                      currentPath: ${JSON.stringify(returnedPath)},
+                      target: '_self'
+                    }, '*');
+                  };
+                  window.jumpTo = function(url) {
+                    window.parent.postMessage({
+                      type: 'iframe_navigate',
+                      href: url,
+                      currentPath: ${JSON.stringify(returnedPath)},
+                      target: '_self'
+                    }, '*');
+                  };
+
+                  // Intercept anchor clicks
+                  document.addEventListener('click', function(e) {
+                    var anchor = e.target.closest('a');
+                    if (anchor) {
+                      var href = anchor.getAttribute('href');
+                      if (href && !href.startsWith('javascript:') && !href.startsWith('#')) {
+                        if (href.startsWith('http') && !href.includes('${printerIp}')) {
+                          return;
+                        }
+                        e.preventDefault();
+                        window.parent.postMessage({
+                          type: 'iframe_navigate',
+                          href: href,
+                          currentPath: ${JSON.stringify(returnedPath)},
+                          target: anchor.getAttribute('target') || '_self'
+                        }, '*');
+                      }
+                    }
+                  }, true);
+
+                  // Intercept standard form submit events
+                  document.addEventListener('submit', function(e) {
+                    var form = e.target;
+                    var action = form.getAttribute('action') || '';
+                    e.preventDefault();
+                    
+                    var formData = {};
+                    var inputs = form.querySelectorAll('input, select, textarea');
+                    inputs.forEach(function(input) {
+                      if (input.name) {
+                        if (input.type === 'checkbox' || input.type === 'radio') {
+                          if (input.checked) {
+                            formData[input.name] = input.value;
+                          }
+                        } else {
+                          formData[input.name] = input.value;
+                        }
+                      }
+                    });
+
+                    window.parent.postMessage({
+                      type: 'iframe_submit',
+                      action: action,
+                      currentPath: ${JSON.stringify(returnedPath)},
+                      formData: formData,
+                      target: form.getAttribute('target') || '_self'
+                    }, '*');
+                  }, true);
+
+                  // Intercept programmatic form.submit() calls
+                  var originalSubmit = HTMLFormElement.prototype.submit;
+                  HTMLFormElement.prototype.submit = function() {
+                    var form = this;
+                    var action = form.getAttribute('action') || '';
+                    
+                    var formData = {};
+                    var inputs = form.querySelectorAll('input, select, textarea');
+                    inputs.forEach(function(input) {
+                      if (input.name) {
+                        if (input.type === 'checkbox' || input.type === 'radio') {
+                          if (input.checked) {
+                            formData[input.name] = input.value;
+                          }
+                        } else {
+                          formData[input.name] = input.value;
+                        }
+                      }
+                    });
+
+                    window.parent.postMessage({
+                      type: 'iframe_submit',
+                      action: action,
+                      currentPath: ${JSON.stringify(returnedPath)},
+                      formData: formData,
+                      target: form.getAttribute('target') || '_self'
+                    }, '*');
+                  };
+                })();
+                </script>
+              `;
+
+              if (preparedHtml.includes('</body>')) {
+                preparedHtml = preparedHtml.replace('</body>', `${injectScript}</body>`);
+              } else {
+                preparedHtml += injectScript;
+              }
+
+              if (!isHistoryNav) {
+                const newHistory = webPreviewHistory.slice(0, webPreviewHistoryIndex + 1);
+                newHistory.push(returnedPath);
+                setWebPreviewHistory(newHistory);
+                setWebPreviewHistoryIndex(newHistory.length - 1);
+              }
+
+              setWebPreviewModal(prev => prev ? { ...prev, html: preparedHtml, path: returnedPath } : null);
+              setWebPreviewLoading(false);
+            } else {
+              setWebPreviewModal(prev => prev ? { ...prev, html: `ERROR: ${parsedRes.error || 'Agent không trả về HTML'}` } : null);
+              setWebPreviewLoading(false);
+            }
+          } else if (statusRes.status === 'failed' || !statusRes.ok) {
+            clearInterval(pollTimer);
+            setWebPreviewModal(prev => prev ? { ...prev, html: `ERROR: ${statusRes.error || 'Lệnh thất bại từ Agent'}` } : null);
+            setWebPreviewLoading(false);
+          }
+        } catch (pollErr: any) {
+          console.error('Poll error:', pollErr);
+        }
+      }, 1500);
+
+    } catch (err: any) {
+      setWebPreviewModal(prev => prev ? { ...prev, html: `ERROR: ${err.message}` } : null);
+      setWebPreviewLoading(false);
+    }
+  }; */
+
+  const handleHistoryBack = () => {
+    if (webPreviewHistoryIndex > 0 && webPreviewModal) {
+      const prevIdx = webPreviewHistoryIndex - 1;
+      setWebPreviewHistoryIndex(prevIdx);
+      fetchRemotePage(webPreviewModal.ip, webPreviewHistory[prevIdx], 'GET', undefined, true);
+    }
+  };
+
+  const handleHistoryForward = () => {
+    if (webPreviewHistoryIndex < webPreviewHistory.length - 1 && webPreviewModal) {
+      const nextIdx = webPreviewHistoryIndex + 1;
+      setWebPreviewHistoryIndex(nextIdx);
+      fetchRemotePage(webPreviewModal.ip, webPreviewHistory[nextIdx], 'GET', undefined, true);
+    }
+  };
+
+  const handleToggleDirectLan = (enabled: boolean) => {
+    setDirectLan(enabled);
+    if (webPreviewModal) {
+      if (enabled) {
+        setWebPreviewModal(prev => prev ? { ...prev, html: 'DIRECT_LAN' } : null);
+        setWebPreviewLoading(false);
+      } else {
+        // Trigger a fresh remote page fetch via Agent
+        fetchRemotePage(webPreviewModal.ip, webPreviewModal.path, 'GET', undefined, false, webPreviewModal.agentUid);
+      }
+    }
+  };
+
+  const handleCloseWebPreview = () => {
+    if (webPreviewModal && webPreviewModal.agentUid) {
+      fetch(`${BASE_URL}/api/agents/${webPreviewModal.agentUid}/tunnel/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ printer_ip: webPreviewModal.ip })
+      }).catch(console.error);
+    }
+    setWebPreviewModal(null);
+    setWebPreviewLoading(false);
+    setWebPreviewHistory([]);
+    setWebPreviewHistoryIndex(-1);
+  };
+
+  useEffect(() => {
+    const handleIframeMessage = (e: MessageEvent) => {
+      const msg = e.data;
+      if (!msg || typeof msg !== 'object') return;
+      if (!webPreviewModal || !webPreviewModal.ip) return;
+
+      if (msg.type === 'iframe_navigate') {
+        const resolved = resolveRelativePath(msg.href, msg.currentPath);
+        fetchRemotePage(webPreviewModal.ip, resolved);
+      } else if (msg.type === 'iframe_submit') {
+        const resolved = resolveRelativePath(msg.action, msg.currentPath);
+        fetchRemotePage(webPreviewModal.ip, resolved, 'POST', msg.formData);
+      }
+    };
+
+    window.addEventListener('message', handleIframeMessage);
+    return () => window.removeEventListener('message', handleIframeMessage);
+  }, [webPreviewModal, webPreviewHistory, webPreviewHistoryIndex]);
+
+  useEffect(() => {
+    if (webPreviewModal?.html && webPreviewModal.html !== 'LOADING' && !webPreviewModal.html.startsWith('ERROR:')) {
+      const blob = new Blob([webPreviewModal.html], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      setPreviewBlobUrl(url);
+      return () => {
+        URL.revokeObjectURL(url);
+      };
+    } else {
+      setPreviewBlobUrl('');
+    }
+  }, [webPreviewModal?.html]);
+
+  // Apply scaling to iframe content
+  useEffect(() => {
+    const applyScaling = () => {
+      try {
+        const iframe = previewIframeRef.current;
+        if (!iframe) return;
+        const doc = iframe.contentDocument || iframe.contentWindow?.document;
+        if (doc && doc.body) {
+          // Reset html and body height constraints to let them grow dynamically to fit the full content height, avoiding cutoffs
+          doc.documentElement.style.height = 'auto';
+          doc.body.style.height = 'auto';
+          doc.body.style.minHeight = '100%';
+
+          doc.body.style.transform = `scale(${scaleX}, ${scaleY})`;
+          doc.body.style.transformOrigin = 'top left';
+          doc.body.style.width = `${100 / scaleX}%`;
+          doc.body.style.boxSizing = 'border-box';
+        }
+      } catch (err) {
+        console.error('Failed to apply scaling:', err);
+      }
+    };
+
+    applyScaling();
+
+    const iframe = previewIframeRef.current;
+    if (iframe) {
+      iframe.addEventListener('load', applyScaling);
+      return () => {
+        iframe.removeEventListener('load', applyScaling);
+      };
+    }
+  }, [previewBlobUrl, scaleX, scaleY]);
 
   // ── FETCH DATA ──
   const fetchLanSitesData = useCallback(async (showLoader = false) => {
@@ -305,6 +977,20 @@ export function AgentPage() {
   const [utilityCommands, setUtilityCommands] = useState<any[]>([]);
   const [utilityCommandsLoading, setUtilityCommandsLoading] = useState(false);
   const [customRunCommand, setCustomRunCommand] = useState('');
+  const [viewOutputModal, setViewOutputModal] = useState<{ isOpen: boolean; title: string; content: string }>({
+    isOpen: false, title: '', content: '',
+  });
+
+  // Commands that return content via RuntimeError — show in view modal instead of error
+  const VIEW_COMMANDS = new Set(['view_settings_json', 'view_stout', 'view_sterror', 'get_public_ip', 'check_watchdog', 'open_web_setting']);
+  const VIEW_COMMAND_TITLES: Record<string, string> = {
+    view_settings_json: '⚙️ settings.json',
+    view_stout: '📄 stout.txt — 100 dòng gần nhất',
+    view_sterror: '🔴 sterror.txt — 100 dòng gần nhất',
+    get_public_ip: '🌍 IP Public',
+    check_watchdog: '🩺 Check Watchdog',
+    open_web_setting: '🌐 Web setting',
+  };
 
   const loadUtilitySettings = useCallback(async (agent: any) => {
     if (!agent) return;
@@ -436,10 +1122,92 @@ export function AgentPage() {
   // Dynamic exec: gửi command_content từ JSON đến agent để exec()
   const handleTriggerUtilityExec = useCallback(async (command: string, commandContent: string) => {
     if (!selectedUtilityAgent) return;
+    
+    // Find cmd in local state utilityCommands
+    const cmdObj = utilityCommands.find(c => c.command === command);
+    const isOutputModal = cmdObj?.output_modal || VIEW_COMMANDS.has(command);
+    const displayTitle = cmdObj?.label || VIEW_COMMAND_TITLES[command] || command;
+
+    let content = commandContent;
+    if (command === 'change_agent_ip' || command === 'check_scan_ip_match') {
+      const isChangeIp = command === 'change_agent_ip';
+      // Open IP input modal instead of window.prompt
+      setIpInputModal({
+        isOpen: true,
+        title: isChangeIp ? '🌐 Đổi địa chỉ IP tĩnh' : '🔍 Kiểm tra IP khớp Copier',
+        hint: isChangeIp
+          ? 'Nhập địa chỉ IPv4 tĩnh muốn gán cho máy Agent.'
+          : 'Nhập địa chỉ IP muốn kiểm tra xem copier nào có FTP Scan entry khớp.',
+        value: '192.168.1.12',
+        error: '',
+        onConfirm: (targetIp: string) => {
+          const finalContent = commandContent.replace('__TARGET_IP__', targetIp);
+          setUtilityActionPending(command);
+          setUtilityStatusMsg({ text: '⌛ Đang gửi lệnh tới Agent...', isError: false });
+          triggerAgentUtilityExec(selectedUtilityAgent!.agent_uid, command, finalContent)
+            .then((res: any) => {
+              if (!res.ok || !res.command_id) throw new Error(res.error || 'Không thể tạo lệnh tiện ích');
+              const commandId = res.command_id;
+              const maxPollMs = 60000;
+              const startTime = Date.now();
+              const timer = setInterval(async () => {
+                try {
+                  const elapsed = Date.now() - startTime;
+                  if (elapsed > maxPollMs) {
+                    clearInterval(timer);
+                    setUtilityStatusMsg({ text: 'Yêu cầu quá thời gian chờ (60s)', isError: true });
+                    setUtilityActionPending(null);
+                    return;
+                  }
+                  const statusRes = await getCommandStatus(commandId);
+                  if (statusRes.status === 'success') {
+                    clearInterval(timer);
+                    if (isOutputModal) {
+                      setViewOutputModal({
+                        isOpen: true,
+                        title: displayTitle,
+                        content: statusRes.result_payload || statusRes.result || '(không có nội dung)',
+                      });
+                      setUtilityStatusMsg(null);
+                    } else {
+                      setUtilityStatusMsg({ text: '⚡ Thực hiện lệnh thành công!', isError: false });
+                    }
+                    setUtilityActionPending(null);
+                  } else if (statusRes.status === 'failed' || !statusRes.ok) {
+                    clearInterval(timer);
+                    if (isOutputModal) {
+                      setViewOutputModal({
+                        isOpen: true,
+                        title: displayTitle,
+                        content: statusRes.error || statusRes.result_payload || statusRes.result || '(không có nội dung)',
+                      });
+                      setUtilityStatusMsg(null);
+                    } else {
+                      setUtilityStatusMsg({ text: `❌ Thất bại: ${statusRes.error || 'Lệnh thất bại từ Agent'}`, isError: true });
+                    }
+                    setUtilityActionPending(null);
+                  } else {
+                    const elapsedSec = Math.round(elapsed / 1000);
+                    setUtilityStatusMsg({ text: `⌛ Đang xử lý... (${elapsedSec}s)`, isError: false });
+                  }
+                } catch (pollErr: any) {
+                  console.error('Poll error:', pollErr);
+                }
+              }, 1000);
+            })
+            .catch((err: any) => {
+              setUtilityStatusMsg({ text: `Lỗi: ${err.message}`, isError: true });
+              setUtilityActionPending(null);
+            });
+        },
+      });
+      return; // Early return — execution continues in modal's onConfirm
+    }
+
     setUtilityActionPending(command);
     setUtilityStatusMsg({ text: '⌛ Đang gửi lệnh tới Agent...', isError: false });
     try {
-      const res = await triggerAgentUtilityExec(selectedUtilityAgent.agent_uid, command, commandContent);
+      const res = await triggerAgentUtilityExec(selectedUtilityAgent.agent_uid, command, content);
       if (!res.ok || !res.command_id) {
         throw new Error(res.error || 'Không thể tạo lệnh tiện ích');
       }
@@ -458,24 +1226,78 @@ export function AgentPage() {
           const statusRes = await getCommandStatus(commandId);
           if (statusRes.status === 'success') {
             clearInterval(timer);
-            setUtilityStatusMsg({ text: '⚡ Thực hiện lệnh thành công!', isError: false });
+            if (isOutputModal) {
+              setViewOutputModal({
+                isOpen: true,
+                title: displayTitle,
+                content: statusRes.result_payload || statusRes.result || '(không có nội dung)',
+              });
+              setUtilityStatusMsg(null);
+            } else {
+              setUtilityStatusMsg({ text: '⚡ Thực hiện lệnh thành công!', isError: false });
+            }
             setUtilityActionPending(null);
           } else if (statusRes.status === 'failed' || !statusRes.ok) {
             clearInterval(timer);
-            setUtilityStatusMsg({ text: `❌ Thất bại: ${statusRes.error || 'Lệnh thất bại từ Agent'}`, isError: true });
+            if (isOutputModal) {
+              setViewOutputModal({
+                isOpen: true,
+                title: displayTitle,
+                content: statusRes.error || statusRes.result_payload || statusRes.result || '(không có nội dung)',
+              });
+              setUtilityStatusMsg(null);
+            } else {
+              setUtilityStatusMsg({ text: `❌ Thất bại: ${statusRes.error || 'Lệnh thất bại từ Agent'}`, isError: true });
+            }
             setUtilityActionPending(null);
           } else {
             const elapsedSec = Math.round(elapsed / 1000);
             setUtilityStatusMsg({ text: `⌛ Đang xử lý... (${elapsedSec}s)`, isError: false });
           }
         } catch (pollErr: any) {
-          console.error('Poll error:', pollErr);
+          // fetchApi may throw (not return) when HTTP status is error.
+          // For view commands, the thrown Error.message IS the content we want to display.
+          const errMsg: string = pollErr?.message || String(pollErr || '');
+          if (isOutputModal && (errMsg.startsWith('[PATH]') || errMsg.includes('stout') || errMsg.includes('sterror') || errMsg.includes('settings.json'))) {
+            clearInterval(timer);
+            setViewOutputModal({
+              isOpen: true,
+              title: displayTitle,
+              content: errMsg,
+            });
+            setUtilityStatusMsg(null);
+            setUtilityActionPending(null);
+          } else {
+            console.error('Poll error:', pollErr);
+          }
         }
       }, 1000);
     } catch (err: any) {
       setUtilityStatusMsg({ text: `Lỗi: ${err.message}`, isError: true });
       setUtilityActionPending(null);
     }
+  }, [selectedUtilityAgent, utilityCommands]);
+
+  const handleEmergencyRestart = useCallback(async () => {
+    if (!selectedUtilityAgent) return;
+    setConfirmModal({
+      isOpen: true,
+      title: '🚨 Kích hoạt Khởi động khẩn cấp',
+      message: 'Lệnh này sẽ đánh dấu yêu cầu thoát khẩn cấp cho Agent này trên server. File watchdog.bat (nếu có trên máy client) sẽ tự động phát hiện và ép đóng printagent.exe rồi mở lại. Việc này giúp thoát khỏi tình trạng treo update. Bạn có chắc chắn muốn thực hiện?',
+      onConfirm: async () => {
+        setUtilityActionPending('emergency_restart');
+        setUtilityStatusMsg({ text: '⌛ Đang đăng ký cờ khởi động lại khẩn cấp...', isError: false });
+        try {
+          const res = await triggerEmergencyRestart(selectedUtilityAgent.agent_uid);
+          if (!res.ok) throw new Error(res.error || 'Thất bại');
+          setUtilityStatusMsg({ text: '⚡ Đã lưu cờ tắt khẩn cấp trên Server. Chờ Watchdog quét...', isError: false });
+        } catch (err: any) {
+          setUtilityStatusMsg({ text: `❌ Lỗi: ${err.message}`, isError: true });
+        } finally {
+          setUtilityActionPending(null);
+        }
+      }
+    });
   }, [selectedUtilityAgent]);
 
   useEffect(() => {
@@ -693,8 +1515,12 @@ export function AgentPage() {
 
   // ── ADD PUBLIC FTP ──
   const handleAddPublicFtp = async () => {
-    const { printerId, email, agentUid } = publicFtpData;
-    if (!email || !email.includes('@')) {
+    const { printerId, name, email, agentUid } = publicFtpData;
+    if (!name || !name.trim()) {
+      showToast('Vui lòng nhập tên điểm scan', 'error');
+      return;
+    }
+    if (email && !email.includes('@')) {
       showToast('Địa chỉ email không hợp lệ', 'error');
       return;
     }
@@ -702,7 +1528,7 @@ export function AgentPage() {
     showToast('Đang tạo yêu cầu thêm FTP/Email lên máy in...', 'info', 3000);
 
     try {
-      const res = await addEmailDestination(printerId, email, agentUid || undefined);
+      const res = await addEmailDestination(printerId, name.trim(), email, agentUid || undefined);
       setPublicFtpLoading(false);
       setActiveModal(null);
 
@@ -714,7 +1540,7 @@ export function AgentPage() {
         res.command_id,
         printerId,
         async (pollData: any) => {
-          showToast(`Đã thêm điểm scan ${email} thành công!`, 'success');
+          showToast(`Đã tạo điểm scan "${name.trim()}" thành công!`, 'success');
           await fetchLanSitesData();
           if (pollData && pollData.address_book_sync) {
             setLiveAddressBooks((prev) => ({ ...prev, [printerId]: pollData.address_book_sync }));
@@ -723,7 +1549,7 @@ export function AgentPage() {
         (errorMsg) => {
           showToast(`Thêm điểm scan thất bại: ${errorMsg}`, 'error');
         },
-        `⌛ Đang thêm điểm scan ${email}...`
+          `⌛ Đang tạo điểm scan "${name.trim()}"...`
       );
     } catch (err: any) {
       setPublicFtpLoading(false);
@@ -1179,7 +2005,7 @@ export function AgentPage() {
             }}
             onClick={() => setActiveTab('agents')}
           >
-            💻 Máy tính ({selectedLan?.agents?.length ?? 0})
+            💻 Máy tính ({selectedLan?.agents?.filter((a: any) => a.is_online).length ?? 0})
           </button>
           <button
             style={{
@@ -1213,10 +2039,10 @@ export function AgentPage() {
                 style={styles.tabContent}
               >
                 <AnimatedList>
-                  {selectedLan.agents.length === 0 ? (
-                    <div style={styles.emptyText}>Không có Agent nào kết nối trong mạng LAN này.</div>
+                  {selectedLan.agents.filter((a: any) => a.is_online).length === 0 ? (
+                    <div style={styles.emptyText}>Không có Agent nào đang online trong mạng LAN này.</div>
                   ) : (
-                    selectedLan.agents.map((agent) => {
+                    selectedLan.agents.filter((a: any) => a.is_online).map((agent) => {
                       const isOnline = agent.is_online;
                       return (
                         <GlowCard key={agent.agent_uid}>
@@ -1523,7 +2349,8 @@ export function AgentPage() {
                             </div>
                           </div>
 
-                          {/* Relay Target Agent selector */}
+                          {/* Relay Target Agent selector - Temporarily hidden per user request */}
+                          {/*
                           <div style={styles.detailRow}>
                             <span style={styles.detailLabel}>Target Agent:</span>
                             <select
@@ -1544,6 +2371,7 @@ export function AgentPage() {
                               )}
                             </select>
                           </div>
+                          */}
 
                           {/* Sync Status Box */}
                           <div
@@ -1711,12 +2539,27 @@ export function AgentPage() {
                             <button
                               style={{ ...styles.smallBtn, flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '8px 12px', display: 'flex', alignItems: 'center' }}
                               onClick={() => {
-                                setPublicFtpData({ printerId: p.id, email: '', agentUid: selectedAgentUid });
+                                setPublicFtpData({ printerId: p.id, name: '', email: '', agentUid: selectedAgentUid });
                                 setActiveModal('public_ftp');
                               }}
                               disabled={onlineAgents.length === 0}
                             >
-                              ➕ Thêm FTP/Email
+                              ➕ Tạo điểm scan
+                            </button>
+
+                            <button
+                              style={{ ...styles.smallBtn, flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '8px 12px', display: 'flex', alignItems: 'center', borderColor: '#3b82f6', color: '#3b82f6' }}
+                              onClick={() => {
+                                if (!selectedAgentUid) {
+                                  showToast('Vui lòng chọn Target Agent trước', 'error');
+                                  return;
+                                }
+                                fetchRemotePage(p.ip, '', 'GET', null, false, selectedAgentUid);
+                              }}
+                              disabled={onlineAgents.length === 0 || !selectedAgentUid}
+                              title="Xem trực tiếp trang quản trị Web Image Monitor của máy photocopy này bằng iframe"
+                            >
+                              🌐 Web setting
                             </button>
 
                             <button
@@ -1730,6 +2573,17 @@ export function AgentPage() {
                               }}
                             >
                               {isExpanded ? '▲ Ẩn danh bạ' : '👁 Xem danh bạ'}
+                            </button>
+
+                            <button
+                              style={{ ...styles.smallBtn, flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '8px 12px', display: 'flex', alignItems: 'center', borderColor: '#ef4444', color: '#ef4444' }}
+                              onClick={() => {
+                                setRemoteLockPrinter({ ip: p.ip, name: p.name || p.printer_name || p.ip, id: p.id, agentUid: selectedAgentUid });
+                                setActiveModal('remote_lock');
+                              }}
+                              disabled={onlineAgents.length === 0}
+                            >
+                              🔒 Khóa máy từ xa
                             </button>
                           </div>
 
@@ -2038,7 +2892,7 @@ export function AgentPage() {
               {activeModal === 'public_ftp' && (
                 <>
                   <div style={styles.modalHeader}>
-                    <h3 style={styles.modalTitle}>➕ Thêm Public FTP/Email</h3>
+                    <h3 style={styles.modalTitle}>➕ Tạo điểm scan</h3>
                     <button style={styles.modalCloseBtn} onClick={() => setActiveModal(null)}>
                       &times;
                     </button>
@@ -2046,7 +2900,19 @@ export function AgentPage() {
 
                   <div style={styles.modalBody}>
                     <div style={styles.formGroup}>
-                      <label style={styles.formLabel}>Địa chỉ Email *</label>
+                      <label style={styles.formLabel}>Tên điểm scan *</label>
+                      <input
+                        type="text"
+                        style={styles.modalInput}
+                        placeholder="VD: scan, scan-tang1, van-phong..."
+                        value={publicFtpData.name}
+                        onChange={(e) => setPublicFtpData((p) => ({ ...p, name: e.target.value }))}
+                      />
+                      <span style={styles.formHelpText}>Tên hiển thị trên máy photocopy và tên thư mục lưu trữ FTP.</span>
+                    </div>
+
+                    <div style={styles.formGroup}>
+                      <label style={styles.formLabel}>Địa chỉ Email</label>
                       <input
                         type="email"
                         style={styles.modalInput}
@@ -2054,7 +2920,7 @@ export function AgentPage() {
                         value={publicFtpData.email}
                         onChange={(e) => setPublicFtpData((p) => ({ ...p, email: e.target.value }))}
                       />
-                      <span style={styles.formHelpText}>Mã FTP/Folder scan sẽ tự động được gán theo email này.</span>
+                      <span style={styles.formHelpText}>Email dùng để lưu thông tin tham chiếu trong hệ thống (không bắt buộc).</span>
                     </div>
 
                     <div style={styles.formGroup}>
@@ -2360,77 +3226,333 @@ export function AgentPage() {
                         🖥️ Công cụ hệ thống Windows
                       </h4>
                       
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
                         {/* Dynamic commands from JSON — thêm lệnh mới vào utility_commands.json trên VPS là xong */}
                         {utilityCommandsLoading ? (
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem', color: 'var(--color-text-secondary)', padding: '8px 0' }}>
+                          <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem', color: 'var(--color-text-secondary)', padding: '8px 0', justifyContent: 'center' }}>
                             <LoadingSpinner size="sm" /> Đang tải danh sách lệnh...
                           </div>
-                        ) : utilityCommands.length > 0 ? (
-                          utilityCommands
-                            .filter((cmd: any) => cmd.command !== 'dxdiag')
-                            .map((cmd: any) => (
-                              <button
-                                key={cmd.command}
-                                onClick={() => handleTriggerUtilityExec(cmd.command, cmd.command_content)}
-                                disabled={utilityActionPending !== null}
-                                style={{
-                                  display: 'flex',
-                                  alignItems: 'center',
-                                  gap: '12px',
-                                  background: 'var(--color-surface-light)',
-                                  border: '1px solid var(--color-surface-light)',
-                                  borderRadius: '8px',
-                                  padding: '10px 12px',
-                                  cursor: utilityActionPending !== null ? 'not-allowed' : 'pointer',
-                                  textAlign: 'left',
-                                  width: '100%',
-                                  transition: 'all 0.2s',
-                                  opacity: utilityActionPending !== null ? 0.6 : 1,
-                                }}
-                                onMouseEnter={(e) => {
-                                  if (utilityActionPending === null) {
-                                    e.currentTarget.style.borderColor = 'var(--color-primary)';
-                                    e.currentTarget.style.background = 'rgba(59, 130, 246, 0.05)';
-                                  }
-                                }}
-                                onMouseLeave={(e) => {
-                                  e.currentTarget.style.borderColor = 'var(--color-surface-light)';
-                                  e.currentTarget.style.background = 'var(--color-surface-light)';
-                                }}
-                              >
-                                <div style={{ fontSize: '1.4rem' }}>{cmd.icon || '🔧'}</div>
-                                <div style={{ flex: 1 }}>
-                                  <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--color-text)' }}>{cmd.label}</div>
-                                  <div style={{ fontSize: '0.68rem', color: 'var(--color-text-secondary)' }}>{cmd.description}</div>
-                                </div>
-                                {utilityActionPending === cmd.command && <LoadingSpinner size="sm" />}
-                              </button>
-                            ))
                         ) : (
-                          // Fallback: nếu chưa có JSON, dùng 2 lệnh mặc định
                           <>
-                            <button onClick={() => handleTriggerUtility('printers')} disabled={utilityActionPending !== null} style={{ display: 'flex', alignItems: 'center', gap: '12px', background: 'var(--color-surface-light)', border: '1px solid var(--color-surface-light)', borderRadius: '8px', padding: '10px 12px', cursor: 'pointer', textAlign: 'left', width: '100%', transition: 'all 0.2s' }}>
-                              <div style={{ fontSize: '1.4rem' }}>🖨️</div>
-                              <div style={{ flex: 1 }}>
-                                <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--color-text)' }}>Danh sách Máy in & Thiết bị</div>
-                                <div style={{ fontSize: '0.68rem', color: 'var(--color-text-secondary)' }}>Mở Control Panel \ Devices and Printers</div>
+                            {utilityCommands.length > 0 ? (
+                              utilityCommands
+                                .filter((cmd: any) => cmd.command !== 'dxdiag' && cmd.command !== 'open_web_setting')
+                                .map((cmd: any) => {
+                                  const isEmergency = cmd.command === 'emergency_restart';
+                                  return (
+                                    <button
+                                      key={cmd.command}
+                                      onClick={() => handleTriggerUtilityExec(cmd.command, cmd.command_content)}
+                                      disabled={utilityActionPending !== null}
+                                      style={{
+                                        display: 'flex',
+                                        flexDirection: 'column',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        gap: '8px',
+                                        background: 'var(--color-surface-light)',
+                                        border: isEmergency ? '1px solid rgba(239, 68, 68, 0.25)' : '1px solid var(--color-surface-light)',
+                                        borderRadius: '12px',
+                                        padding: '16px 8px',
+                                        cursor: utilityActionPending !== null ? 'not-allowed' : 'pointer',
+                                        textAlign: 'center',
+                                        width: '100%',
+                                        transition: 'all 0.2s',
+                                        opacity: utilityActionPending !== null ? 0.6 : 1,
+                                        minHeight: '108px',
+                                        boxSizing: 'border-box',
+                                      }}
+                                      onMouseEnter={(e) => {
+                                        if (utilityActionPending === null) {
+                                          e.currentTarget.style.borderColor = isEmergency ? '#ef4444' : 'var(--color-primary)';
+                                          e.currentTarget.style.background = isEmergency ? 'rgba(239, 68, 68, 0.05)' : 'rgba(59, 130, 246, 0.05)';
+                                        }
+                                      }}
+                                      onMouseLeave={(e) => {
+                                        e.currentTarget.style.borderColor = isEmergency ? 'rgba(239, 68, 68, 0.25)' : 'var(--color-surface-light)';
+                                        e.currentTarget.style.background = 'var(--color-surface-light)';
+                                      }}
+                                    >
+                                      <div style={{ fontSize: '1.6rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                        {utilityActionPending === cmd.command ? <LoadingSpinner size="sm" /> : (cmd.icon || '🔧')}
+                                      </div>
+                                      <div style={{
+                                        fontSize: '0.72rem',
+                                        fontWeight: 600,
+                                        color: isEmergency ? '#ef4444' : 'var(--color-text)',
+                                        lineHeight: '1.2',
+                                        wordBreak: 'break-word',
+                                      }}>
+                                        {cmd.label}
+                                      </div>
+                                    </button>
+                                  );
+                                })
+                            ) : (
+                              // Fallback: nếu chưa có JSON, dùng 2 lệnh mặc định
+                              <>
+                                <button
+                                  onClick={() => handleTriggerUtility('printers')}
+                                  disabled={utilityActionPending !== null}
+                                  style={{
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '8px',
+                                    background: 'var(--color-surface-light)',
+                                    border: '1px solid var(--color-surface-light)',
+                                    borderRadius: '12px',
+                                    padding: '16px 8px',
+                                    cursor: utilityActionPending !== null ? 'not-allowed' : 'pointer',
+                                    textAlign: 'center',
+                                    width: '100%',
+                                    transition: 'all 0.2s',
+                                    opacity: utilityActionPending !== null ? 0.6 : 1,
+                                    minHeight: '108px',
+                                    boxSizing: 'border-box',
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    if (utilityActionPending === null) {
+                                      e.currentTarget.style.borderColor = 'var(--color-primary)';
+                                      e.currentTarget.style.background = 'rgba(59, 130, 246, 0.05)';
+                                    }
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.borderColor = 'var(--color-surface-light)';
+                                    e.currentTarget.style.background = 'var(--color-surface-light)';
+                                  }}
+                                >
+                                  <div style={{ fontSize: '1.6rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                    {utilityActionPending === 'printers' ? <LoadingSpinner size="sm" /> : '🖨️'}
+                                  </div>
+                                  <div style={{
+                                    fontSize: '0.72rem',
+                                    fontWeight: 600,
+                                    color: 'var(--color-text)',
+                                    lineHeight: '1.2',
+                                    wordBreak: 'break-word',
+                                  }}>
+                                    Danh sách Máy in
+                                  </div>
+                                </button>
+                                <button
+                                  onClick={() => handleTriggerUtility('scan')}
+                                  disabled={utilityActionPending !== null}
+                                  style={{
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '8px',
+                                    background: 'var(--color-surface-light)',
+                                    border: '1px solid var(--color-surface-light)',
+                                    borderRadius: '12px',
+                                    padding: '16px 8px',
+                                    cursor: utilityActionPending !== null ? 'not-allowed' : 'pointer',
+                                    textAlign: 'center',
+                                    width: '100%',
+                                    transition: 'all 0.2s',
+                                    opacity: utilityActionPending !== null ? 0.6 : 1,
+                                    minHeight: '108px',
+                                    boxSizing: 'border-box',
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    if (utilityActionPending === null) {
+                                      e.currentTarget.style.borderColor = 'var(--color-primary)';
+                                      e.currentTarget.style.background = 'rgba(59, 130, 246, 0.05)';
+                                    }
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.borderColor = 'var(--color-surface-light)';
+                                    e.currentTarget.style.background = 'var(--color-surface-light)';
+                                  }}
+                                >
+                                  <div style={{ fontSize: '1.6rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                    {utilityActionPending === 'scan' ? <LoadingSpinner size="sm" /> : '📂'}
+                                  </div>
+                                  <div style={{
+                                    fontSize: '0.72rem',
+                                    fontWeight: 600,
+                                    color: 'var(--color-text)',
+                                    lineHeight: '1.2',
+                                    wordBreak: 'break-word',
+                                  }}>
+                                    Thư mục Scan
+                                  </div>
+                                </button>
+                              </>
+                            )}
+
+                            {/* Static buttons: Check watchdog and Emergency Kill */}
+                            {/* Check Watchdog */}
+                            <button
+                              onClick={() => {
+                                if (!selectedUtilityAgent) return;
+                                setUtilityActionPending('check_watchdog');
+                                setUtilityStatusMsg({ text: '⌛ Đang kiểm tra watchdog...', isError: false });
+                                const script = `import subprocess, os, sys
+results = []
+def check(name):
+    try:
+        out = subprocess.check_output(['tasklist', '/FI', f'IMAGENAME eq {name}'], text=True, creationflags=0x08000000)
+        count = out.lower().count(name.lower())
+        return count
+    except:
+        return 0
+
+wd = check('cmd.exe')
+pa = check('printagent.exe')
+
+exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.getcwd()
+wd_exists = os.path.exists(os.path.join(exe_dir, 'watchdog.bat'))
+
+lines = []
+lines.append(f'printagent.exe: {pa} process(es) running')
+lines.append(f'watchdog.bat file: {"EXISTS" if wd_exists else "NOT FOUND"} in {exe_dir}')
+raise RuntimeError('\\n'.join(lines))`;
+                                triggerAgentUtilityExec(selectedUtilityAgent.agent_uid, 'check_watchdog', script)
+                                  .then((res: any) => {
+                                    if (res.ok && res.command_id) {
+                                      const maxPollMs = 30000;
+                                      const startTime = Date.now();
+                                      const timer = setInterval(async () => {
+                                        if (Date.now() - startTime > maxPollMs) {
+                                          clearInterval(timer);
+                                          setUtilityStatusMsg({ text: '⏱️ Timeout chờ kết quả (30s)', isError: true });
+                                          setUtilityActionPending(null);
+                                          return;
+                                        }
+                                        try {
+                                          const statusRes = await getCommandStatus(res.command_id);
+                                          if (statusRes.status === 'success') {
+                                            clearInterval(timer);
+                                            const msg = statusRes.result_payload || statusRes.result || statusRes.error || 'Hoàn thành';
+                                            setViewOutputModal({
+                                              isOpen: true,
+                                              title: '🩺 Check Watchdog',
+                                              content: msg,
+                                            });
+                                            setUtilityStatusMsg(null);
+                                            setUtilityActionPending(null);
+                                          } else if (statusRes.status === 'failed') {
+                                            clearInterval(timer);
+                                            const errMsg = statusRes.error || statusRes.result_payload || statusRes.result || 'Failed';
+                                            setViewOutputModal({
+                                              isOpen: true,
+                                              title: '🩺 Check Watchdog',
+                                              content: errMsg,
+                                            });
+                                            setUtilityStatusMsg(null);
+                                            setUtilityActionPending(null);
+                                          }
+                                        } catch {}
+                                      }, 2000);
+                                    } else {
+                                      setUtilityStatusMsg({ text: '❌ ' + (res.error || 'Không thể gửi lệnh'), isError: true });
+                                      setUtilityActionPending(null);
+                                    }
+                                  })
+                                  .catch((err: any) => {
+                                    setUtilityStatusMsg({ text: '❌ ' + err.message, isError: true });
+                                    setUtilityActionPending(null);
+                                  });
+                              }}
+                              disabled={utilityActionPending !== null}
+                              style={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '8px',
+                                background: 'var(--color-surface-light)',
+                                border: '1px solid var(--color-surface-light)',
+                                borderRadius: '12px',
+                                padding: '16px 8px',
+                                cursor: utilityActionPending !== null ? 'not-allowed' : 'pointer',
+                                textAlign: 'center',
+                                width: '100%',
+                                transition: 'all 0.2s',
+                                opacity: utilityActionPending !== null ? 0.6 : 1,
+                                minHeight: '108px',
+                                boxSizing: 'border-box',
+                              }}
+                              onMouseEnter={(e) => {
+                                if (utilityActionPending === null) {
+                                  e.currentTarget.style.borderColor = 'var(--color-primary)';
+                                  e.currentTarget.style.background = 'rgba(59, 130, 246, 0.05)';
+                                }
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.borderColor = 'var(--color-surface-light)';
+                                e.currentTarget.style.background = 'var(--color-surface-light)';
+                              }}
+                            >
+                              <div style={{ fontSize: '1.6rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                {utilityActionPending === 'check_watchdog' ? <LoadingSpinner size="sm" /> : '🩺'}
                               </div>
-                              {utilityActionPending === 'printers' && <LoadingSpinner size="sm" />}
+                              <div style={{
+                                fontSize: '0.72rem',
+                                fontWeight: 600,
+                                color: 'var(--color-text)',
+                                lineHeight: '1.2',
+                                wordBreak: 'break-word',
+                              }}>
+                                Check watchdog
+                              </div>
                             </button>
-                            <button onClick={() => handleTriggerUtility('scan')} disabled={utilityActionPending !== null} style={{ display: 'flex', alignItems: 'center', gap: '12px', background: 'var(--color-surface-light)', border: '1px solid var(--color-surface-light)', borderRadius: '8px', padding: '10px 12px', cursor: 'pointer', textAlign: 'left', width: '100%', transition: 'all 0.2s' }}>
-                              <div style={{ fontSize: '1.4rem' }}>📂</div>
-                              <div style={{ flex: 1 }}>
-                                <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--color-text)' }}>Thư mục Scan gốc</div>
-                                <div style={{ fontSize: '0.68rem', color: 'var(--color-text-secondary)' }}>Mở thư mục lưu trữ file scan trên PC</div>
+
+                            {/* Emergency Kill */}
+                            <button
+                              onClick={handleEmergencyRestart}
+                              disabled={utilityActionPending !== null}
+                              style={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '8px',
+                                background: 'var(--color-surface-light)',
+                                border: '1px solid rgba(239, 68, 68, 0.25)',
+                                borderRadius: '12px',
+                                padding: '16px 8px',
+                                cursor: utilityActionPending !== null ? 'not-allowed' : 'pointer',
+                                textAlign: 'center',
+                                width: '100%',
+                                transition: 'all 0.2s',
+                                opacity: utilityActionPending !== null ? 0.6 : 1,
+                                minHeight: '108px',
+                                boxSizing: 'border-box',
+                              }}
+                              onMouseEnter={(e) => {
+                                if (utilityActionPending === null) {
+                                  e.currentTarget.style.borderColor = '#ef4444';
+                                  e.currentTarget.style.background = 'rgba(239, 68, 68, 0.05)';
+                                }
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.25)';
+                                e.currentTarget.style.background = 'var(--color-surface-light)';
+                              }}
+                            >
+                              <div style={{ fontSize: '1.6rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                {utilityActionPending === 'emergency_restart' ? <LoadingSpinner size="sm" /> : '🔌'}
                               </div>
-                              {utilityActionPending === 'scan' && <LoadingSpinner size="sm" />}
+                              <div style={{
+                                fontSize: '0.72rem',
+                                fontWeight: 600,
+                                color: '#ef4444',
+                                lineHeight: '1.2',
+                                wordBreak: 'break-word',
+                              }}>
+                                Emergency Kill
+                              </div>
                             </button>
                           </>
                         )}
 
                         {/* Run command input — luôn hiển thị ở dưới cùng */}
-                        <div style={{ background: 'var(--color-surface-light)', border: '1px solid var(--color-surface-light)', borderRadius: '8px', padding: '10px 12px' }}>
+                        <div style={{ background: 'var(--color-surface-light)', border: '1px solid var(--color-surface-light)', borderRadius: '8px', padding: '10px 12px', gridColumn: '1 / -1' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                             <div style={{ fontSize: '1.4rem' }}>💻</div>
                             <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--color-text)' }}>Thực hiện lệnh Run</div>
@@ -2515,7 +3637,6 @@ export function AgentPage() {
                       </div>
                     </div>
 
-
                   </div>
 
                   <div style={styles.modalFooter}>
@@ -2576,6 +3697,90 @@ export function AgentPage() {
                   </div>
                 </>
               )}
+
+              {activeModal === 'remote_lock' && remoteLockPrinter && (
+                <>
+                  <div style={styles.modalHeader}>
+                    <h3 style={styles.modalTitle}>🔒 Khóa / Mở khóa máy từ xa</h3>
+                    <button style={styles.modalCloseBtn} onClick={() => setActiveModal(null)}>
+                      &times;
+                    </button>
+                  </div>
+                  <div style={styles.modalBody}>
+                    <p style={{ margin: '0 0 16px 0', fontSize: '0.95rem', color: 'var(--color-text)' }}>
+                      Máy: <strong>{remoteLockPrinter.name}</strong> ({remoteLockPrinter.ip})
+                    </p>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      {/* Nút Khóa máy */}
+                      <button
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: '12px',
+                          background: '#fee2e2', border: '1px solid #ef4444', borderRadius: '8px',
+                          padding: '12px 14px', cursor: 'pointer', textAlign: 'left',
+                        }}
+                        onClick={() => {
+                          setActiveModal(null);
+                          showToast(`Đang gửi lệnh khóa máy ${remoteLockPrinter.name}...`, 'info', 3000);
+                          modifyDeviceAddress({
+                            ip: remoteLockPrinter.ip,
+                            action: 'lock_machine',
+                            agent_uid: remoteLockPrinter.agentUid,
+                          })
+                            .then((res: any) => {
+                              if (res.ok) {
+                                showToast(`Đã gửi lệnh khóa máy ${remoteLockPrinter.name} thành công!`, 'success');
+                              } else {
+                                showToast('Lỗi: ' + (res.error || 'Failed'), 'error');
+                              }
+                            })
+                            .catch((err: any) => {
+                              showToast('Lỗi: ' + err.message, 'error');
+                            });
+                        }}
+                      >
+                        <div style={{ fontSize: '1.4rem' }}>🔒</div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#dc2626' }}>Khóa máy</div>
+                          <div style={{ fontSize: '0.7rem', color: '#7f1d1d' }}>Bật xác thực User Code, ngăn người dùng trái phép sử dụng máy</div>
+                        </div>
+                      </button>
+                      {/* Nút Mở khóa máy */}
+                      <button
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: '12px',
+                          background: '#dcfce7', border: '1px solid #22c55e', borderRadius: '8px',
+                          padding: '12px 14px', cursor: 'pointer', textAlign: 'left',
+                        }}
+                        onClick={() => {
+                          setActiveModal(null);
+                          showToast(`Đang gửi lệnh mở khóa máy ${remoteLockPrinter.name}...`, 'info', 3000);
+                          modifyDeviceAddress({
+                            ip: remoteLockPrinter.ip,
+                            action: 'enable_machine',
+                            agent_uid: remoteLockPrinter.agentUid,
+                          })
+                            .then((res: any) => {
+                              if (res.ok) {
+                                showToast(`Đã gửi lệnh mở khóa máy ${remoteLockPrinter.name} thành công!`, 'success');
+                              } else {
+                                showToast('Lỗi: ' + (res.error || 'Failed'), 'error');
+                              }
+                            })
+                            .catch((err: any) => {
+                              showToast('Lỗi: ' + err.message, 'error');
+                            });
+                        }}
+                      >
+                        <div style={{ fontSize: '1.4rem' }}>🔓</div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#16a34a' }}>Mở khóa máy</div>
+                          <div style={{ fontSize: '0.7rem', color: '#14532d' }}>Tắt xác thực User Code, cho phép sử dụng máy tự do</div>
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
             </motion.div>
           </div>
         )}
@@ -2618,7 +3823,10 @@ export function AgentPage() {
                     borderColor: 'var(--color-error)',
                     color: 'white',
                   }}
-                  onClick={confirmModal.onConfirm}
+                  onClick={() => {
+                    setConfirmModal((prev) => ({ ...prev, isOpen: false }));
+                    confirmModal.onConfirm?.();
+                  }}
                 >
                   Đồng ý
                 </button>
@@ -2636,6 +3844,1031 @@ export function AgentPage() {
                 </button>
               </div>
             </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* 6. IP INPUT MODAL */}
+      <AnimatePresence>
+        {ipInputModal.isOpen && (
+          <div
+            style={{ ...styles.confirmOverlay, zIndex: 170 }}
+            onClick={() => setIpInputModal((prev) => ({ ...prev, isOpen: false, error: '' }))}
+          >
+            <motion.div
+              style={styles.confirmModalCard}
+              onClick={(e) => e.stopPropagation()}
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+            >
+              <div style={styles.modalHeader}>
+                <h3 style={styles.modalTitle}>{ipInputModal.title}</h3>
+                <button
+                  style={styles.modalCloseBtn}
+                  onClick={() => setIpInputModal((prev) => ({ ...prev, isOpen: false, error: '' }))}
+                >
+                  &times;
+                </button>
+              </div>
+
+              <div style={styles.modalBody}>
+                <p style={{ fontSize: '0.78rem', color: 'var(--color-text-secondary)', margin: '0 0 10px 0', lineHeight: 1.5 }}>
+                  {ipInputModal.hint} Ví dụ: <code style={{ background: 'var(--color-surface-light)', padding: '1px 5px', borderRadius: 4 }}>192.168.1.15</code>
+                </p>
+                <input
+                  autoFocus
+                  type="text"
+                  value={ipInputModal.value}
+                  onChange={(e) => setIpInputModal((prev) => ({ ...prev, value: e.target.value, error: '' }))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
+                      if (!ipPattern.test(ipInputModal.value.trim())) {
+                        setIpInputModal((prev) => ({ ...prev, error: 'IP không hợp lệ! Vui lòng nhập đúng dạng x.x.x.x' }));
+                        return;
+                      }
+                      const cb = ipInputModal.onConfirm;
+                      setIpInputModal((prev) => ({ ...prev, isOpen: false, error: '' }));
+                      cb(ipInputModal.value.trim());
+                    }
+                    if (e.key === 'Escape') {
+                      setIpInputModal((prev) => ({ ...prev, isOpen: false, error: '' }));
+                    }
+                  }}
+                  placeholder="192.168.1.x"
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    border: ipInputModal.error
+                      ? '1.5px solid var(--color-error)'
+                      : '1.5px solid var(--color-surface-light)',
+                    background: 'var(--color-background)',
+                    color: 'var(--color-text)',
+                    fontSize: '0.9rem',
+                    fontFamily: 'monospace',
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                    transition: 'border-color 0.2s',
+                  }}
+                  onFocus={(e) => {
+                    if (!ipInputModal.error) e.target.style.borderColor = 'var(--color-primary)';
+                  }}
+                  onBlur={(e) => {
+                    if (!ipInputModal.error) e.target.style.borderColor = 'var(--color-surface-light)';
+                  }}
+                />
+                {ipInputModal.error && (
+                  <p style={{ margin: '6px 0 0 0', fontSize: '0.72rem', color: 'var(--color-error)' }}>
+                    ⚠️ {ipInputModal.error}
+                  </p>
+                )}
+              </div>
+
+              <div style={styles.modalFooter}>
+                <button
+                  style={{
+                    ...styles.smallBtn,
+                    padding: '10px 16px',
+                    fontSize: '0.82rem',
+                    background: 'var(--color-primary)',
+                    borderColor: 'var(--color-primary)',
+                    color: 'white',
+                  }}
+                  onClick={() => {
+                    const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
+                    if (!ipPattern.test(ipInputModal.value.trim())) {
+                      setIpInputModal((prev) => ({ ...prev, error: 'IP không hợp lệ! Vui lòng nhập đúng dạng x.x.x.x' }));
+                      return;
+                    }
+                    const cb = ipInputModal.onConfirm;
+                    setIpInputModal((prev) => ({ ...prev, isOpen: false, error: '' }));
+                    cb(ipInputModal.value.trim());
+                  }}
+                >
+                  ✅ Xác nhận
+                </button>
+                <button
+                  style={{
+                    ...styles.smallBtn,
+                    padding: '10px 16px',
+                    fontSize: '0.82rem',
+                    borderColor: 'var(--color-secondary)',
+                    color: 'var(--color-secondary)',
+                  }}
+                  onClick={() => setIpInputModal((prev) => ({ ...prev, isOpen: false, error: '' }))}
+                >
+                  Hủy
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* 7. VIEW OUTPUT MODAL — hiển thị nội dung file log/config từ agent */}
+      <AnimatePresence>
+        {viewOutputModal.isOpen && (
+          <div
+            style={{ ...styles.confirmOverlay, zIndex: 180, alignItems: 'flex-start', paddingTop: '5vh' }}
+            onClick={() => setViewOutputModal((prev) => ({ ...prev, isOpen: false }))}
+          >
+            <motion.div
+              style={{
+                ...styles.confirmModalCard,
+                maxWidth: '680px',
+                width: '95%',
+                maxHeight: '88vh',
+                display: 'flex',
+                flexDirection: 'column',
+              }}
+              onClick={(e) => e.stopPropagation()}
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+            >
+              <div style={styles.modalHeader}>
+                <h3 style={{ ...styles.modalTitle, fontSize: '0.85rem' }}>{viewOutputModal.title}</h3>
+                <button
+                  style={styles.modalCloseBtn}
+                  onClick={() => setViewOutputModal((prev) => ({ ...prev, isOpen: false }))}
+                >
+                  &times;
+                </button>
+              </div>
+
+              <pre
+                style={{
+                  flex: 1,
+                  overflow: 'auto',
+                  margin: 0,
+                  padding: '12px',
+                  background: 'var(--color-background)',
+                  border: '1px solid var(--color-surface-light)',
+                  borderRadius: '8px',
+                  fontSize: '0.68rem',
+                  lineHeight: 1.55,
+                  fontFamily: "'Consolas', 'Monaco', monospace",
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-all',
+                  color: 'var(--color-text)',
+                  minHeight: 0,
+                }}
+              >
+                {viewOutputModal.content}
+              </pre>
+
+              <div style={{ ...styles.modalFooter, marginTop: '10px' }}>
+                <button
+                  style={{
+                    ...styles.smallBtn,
+                    padding: '8px 14px',
+                    fontSize: '0.78rem',
+                  }}
+                  onClick={() => {
+                    navigator.clipboard.writeText(viewOutputModal.content).catch(() => {});
+                  }}
+                >
+                  📋 Copy
+                </button>
+                <button
+                  style={{
+                    ...styles.smallBtn,
+                    padding: '8px 14px',
+                    fontSize: '0.78rem',
+                    borderColor: 'var(--color-secondary)',
+                    color: 'var(--color-secondary)',
+                  }}
+                  onClick={() => setViewOutputModal((prev) => ({ ...prev, isOpen: false }))}
+                >
+                  Đóng
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* 8. WEB PREVIEW MODAL — Xem trực tiếp Web Setting */}
+      <AnimatePresence>
+        {webPreviewModal && webPreviewModal.isOpen && (
+          <div
+            className="web-preview-modal-overlay"
+            style={{ ...styles.confirmOverlay, zIndex: 190, alignItems: 'flex-start', paddingTop: '5vh' }}
+            onClick={handleCloseWebPreview}
+          >
+            <style>{`
+              @keyframes spin {
+                to { transform: rotate(360deg); }
+              }
+              @media (max-width: 767px) {
+                .web-preview-modal-overlay {
+                  padding-top: 0px !important;
+                  align-items: center !important;
+                  justify-content: center !important;
+                }
+                .web-preview-modal-card {
+                  width: 100% !important;
+                  height: 100vh !important;
+                  max-height: 100vh !important;
+                  border-radius: 0px !important;
+                  padding: 12px !important;
+                  margin: 0 !important;
+                }
+              }
+            `}</style>
+            {(() => {
+              let pageTitle = 'Trang cấu hình máy in';
+              if (webPreviewModal.html && webPreviewModal.html !== 'LOADING' && !webPreviewModal.html.startsWith('ERROR:')) {
+                if (webPreviewModal.html === 'DIRECT_LAN') {
+                  pageTitle = 'Kết nối trực tiếp LAN';
+                } else {
+                  const titleMatch = webPreviewModal.html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+                  if (titleMatch && titleMatch[1]) {
+                    pageTitle = titleMatch[1].trim();
+                  }
+                }
+              }
+              
+              return (
+                <motion.div
+                  className="web-preview-modal-card"
+                  style={{
+                    ...styles.confirmModalCard,
+                    maxWidth: '1200px',
+                    width: '95%',
+                    height: '85vh',
+                    maxHeight: '85vh',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    padding: '20px',
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  initial={{ scale: 0.95, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0.95, opacity: 0 }}
+                >
+                  <div style={styles.modalHeader}>
+                    <h3 style={{ ...styles.modalTitle, fontSize: '0.85rem' }}>{webPreviewModal.title}</h3>
+                    <button
+                      style={styles.modalCloseBtn}
+                      onClick={handleCloseWebPreview}
+                    >
+                      &times;
+                    </button>
+                  </div>
+
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', gap: '15px', minHeight: 0 }}>
+                    {webPreviewModal.html === 'LOADING' ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '300px', gap: '12px', padding: '20px' }}>
+                        <svg
+                          style={{
+                            width: '36px',
+                            height: '36px',
+                            color: 'var(--color-primary)',
+                            animation: 'spin 1s linear infinite'
+                          }}
+                          xmlns="http://www.w3.org/2000/svg"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                        >
+                          <circle style={{ opacity: 0.25 }} cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path style={{ opacity: 0.75 }} fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <span style={{ fontSize: '0.85rem', color: 'var(--color-text-secondary)', fontWeight: 500 }}>
+                          Đang đợi phản hồi từ Agent...
+                        </span>
+                        <span style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.4)', textAlign: 'center', maxWidth: '320px' }}>
+                          Agent đang kết nối trực tiếp đến máy in và nạp cấu hình...
+                        </span>
+                      </div>
+                    ) : webPreviewModal.html.startsWith('ERROR:') ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '300px', gap: '12px', padding: '20px', color: 'var(--color-error)' }}>
+                        <span style={{ fontSize: '2.2rem' }}>⚠️</span>
+                        <span style={{ fontSize: '0.85rem', fontWeight: 600, textAlign: 'center' }}>
+                          Lỗi lấy trang Web Setting từ Agent
+                        </span>
+                        <pre style={{ fontSize: '0.75rem', whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0, padding: '12px', background: 'rgba(239, 68, 68, 0.08)', borderRadius: '8px', border: '1px solid rgba(239, 68, 68, 0.15)', width: '100%', boxSizing: 'border-box', fontFamily: 'monospace' }}>
+                          {webPreviewModal.html.replace('ERROR:', '').trim()}
+                        </pre>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', flex: 1, minHeight: 0 }}>
+                        {/* Compact Connection Mode Status Row */}
+                        <div style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          background: 'rgba(255, 255, 255, 0.03)',
+                          border: '1px solid var(--color-surface-light)',
+                          borderRadius: '8px',
+                          padding: '8px 12px',
+                          fontSize: '0.74rem'
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--color-text)' }}>
+                            <span>🔌 Kết nối: <strong>{directLan ? '⚡ Trực tiếp LAN' : '🌐 Qua Agent'}</strong></span>
+                          </div>
+                          <button
+                            onClick={() => setShowPreviewDetails(!showPreviewDetails)}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: 'var(--color-primary)',
+                              cursor: 'pointer',
+                              fontWeight: 600,
+                              fontSize: '0.72rem',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px'
+                            }}
+                          >
+                            {showPreviewDetails ? 'Thu gọn ▲' : 'Cài đặt & Chi tiết ▼'}
+                          </button>
+                        </div>
+
+                        {showPreviewDetails && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                            {/* Success Status & Control Actions */}
+                            <div style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              gap: '12px',
+                              background: 'rgba(16, 185, 129, 0.04)',
+                              border: '1px solid rgba(16, 185, 129, 0.15)',
+                              borderRadius: '8px',
+                              padding: '10px 14px',
+                            }}>
+                              <div style={{ fontSize: '0.74rem', color: 'var(--color-text-secondary)' }}>
+                                <span style={{ color: '#10b981', fontWeight: 700 }}>🟢 Kết nối Live:</span> {pageTitle} (<span style={{ fontFamily: 'monospace' }}>{webPreviewModal.ip}</span>)
+                              </div>
+                              
+                              <button
+                                onClick={() => window.open(`http://${webPreviewModal.ip}/`, '_blank')}
+                                style={{
+                                  padding: '6px 12px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 600,
+                                  background: '#10b981',
+                                  border: 'none',
+                                  borderRadius: '6px',
+                                  color: 'white',
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '6px',
+                                  boxShadow: '0 2px 8px rgba(16, 185, 129, 0.15)',
+                                }}
+                              >
+                                🌐 Mở trực tiếp LAN
+                              </button>
+                            </div>
+
+                            {/* Chế độ kết nối Switcher */}
+                            <div style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: '12px',
+                              background: 'var(--color-surface)',
+                              border: '1px solid var(--color-surface-light)',
+                              borderRadius: '8px',
+                              padding: '8px 12px',
+                            }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.74rem', fontWeight: 600, color: 'var(--color-text)' }}>
+                                🔗 Chế độ kết nối:
+                              </div>
+                              <div style={{ display: 'flex', gap: '6px' }}>
+                                <button
+                                  onClick={() => handleToggleDirectLan(false)}
+                                  style={{
+                                    padding: '4px 10px',
+                                    fontSize: '0.70rem',
+                                    fontWeight: 600,
+                                    background: !directLan ? 'var(--color-primary)' : 'rgba(255,255,255,0.05)',
+                                    color: !directLan ? 'white' : 'var(--color-text-secondary)',
+                                    border: !directLan ? '1px solid var(--color-primary)' : '1px solid var(--color-surface-light)',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    transition: 'all 0.2s ease',
+                                  }}
+                                >
+                                  🔌 Qua Agent (Từ xa)
+                                </button>
+                                <button
+                                  onClick={() => handleToggleDirectLan(true)}
+                                  style={{
+                                    padding: '4px 10px',
+                                    fontSize: '0.70rem',
+                                    fontWeight: 600,
+                                    background: directLan ? '#10b981' : 'rgba(255,255,255,0.05)',
+                                    color: directLan ? 'white' : 'var(--color-text-secondary)',
+                                    border: directLan ? '1px solid #10b981' : '1px solid var(--color-surface-light)',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    transition: 'all 0.2s ease',
+                                  }}
+                                >
+                                  ⚡ Trực tiếp LAN (Cùng Wifi)
+                                </button>
+                              </div>
+                            </div>
+
+                            {directLan && window.location.protocol === 'https:' && (
+                              <div style={{
+                                color: '#fbbf24',
+                                background: 'rgba(251, 191, 36, 0.08)',
+                                border: '1px solid rgba(251, 191, 36, 0.25)',
+                                borderRadius: '8px',
+                                padding: '10px 14px',
+                                fontSize: '0.72rem',
+                                lineHeight: 1.4
+                              }}>
+                                ⚠️ <strong>Mixed Content Block:</strong> Trình duyệt di động/máy tính sẽ chặn kết nối HTTP trực tiếp đến IP máy in từ trang web bảo mật HTTPS. Để kết nối trực tiếp thành công, hãy mở trang web quản trị qua <strong>HTTP</strong> hoặc click nút <strong>🌐 Mở trực tiếp LAN</strong> phía trên để truy cập trong tab mới.
+                              </div>
+                            )}
+
+                            {directLan && (
+                              <div style={{
+                                color: '#60a5fa',
+                                background: 'rgba(96, 165, 250, 0.08)',
+                                border: '1px solid rgba(96, 165, 250, 0.25)',
+                                borderRadius: '8px',
+                                padding: '10px 14px',
+                                fontSize: '0.72rem',
+                                lineHeight: 1.4
+                              }}>
+                                💡 <strong>Chế độ trực tiếp LAN:</strong> Thiết bị kết nối trực tiếp đến IP máy in qua mạng Wifi nội bộ.
+                                <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
+                                  <li>Thanh địa chỉ và Lịch sử duyệt sẽ không tự động cập nhật.</li>
+                                  <li>Chức năng thu phóng (Ngang/Dọc) trong iframe không áp dụng (vui lòng zoom bằng thao tác vuốt).</li>
+                                </ul>
+                              </div>
+                            )}
+                            
+                            {!directLan && (
+                              <div style={{
+                                color: 'var(--color-text-secondary)',
+                                background: 'rgba(255, 255, 255, 0.02)',
+                                border: '1px solid var(--color-surface-light)',
+                                borderRadius: '8px',
+                                padding: '10px 14px',
+                                fontSize: '0.72rem',
+                                lineHeight: 1.4
+                              }}>
+                                <strong style={{ color: 'var(--color-primary)' }}>🛠️ Nhật ký & Thông số kết nối ngược (SSH Reverse Tunnel):</strong>
+                                <div style={{ marginTop: '6px', fontFamily: 'monospace', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                  <div>• <strong>Máy khách (Agent Uid):</strong> {webPreviewModal.agentUid}</div>
+                                  <div>• <strong>Địa chỉ IP Máy in:</strong> {webPreviewModal.ip}</div>
+                                  <div>• <strong>Cổng dịch vụ máy in:</strong> 80</div>
+                                  <div>• <strong>Máy chủ VPS:</strong> 31.97.76.62</div>
+                                  <div>• <strong>Cổng kết nối trên VPS (Assigned Port):</strong> {webPreviewModal.url ? webPreviewModal.url.split(':').pop() : 'Đang cấp phát...'}</div>
+                                  <div>• <strong>Phương thức xác thực:</strong> SSH Key pair (Root User)</div>
+                                  <div>• <strong>Đường dẫn kết nối:</strong> <span style={{ color: 'var(--color-text)' }}>{webPreviewModal.url || 'N/A'}</span></div>
+                                  {webPreviewModal.url && (
+                                    <div style={{ color: '#fbbf24', marginTop: '4px' }}>
+                                      ⚠️ Nếu Iframe hiển thị màn hình trắng / lỗi kết nối, có thể do trình duyệt chặn nội dung Mixed Content (HTTP trên trang HTTPS). Hãy click nút <strong>🔗 Mở tab mới ↗</strong> ở thanh điều khiển phía dưới để xem trực tiếp.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Browser Chrome Controls (Address Bar & Nav Buttons) */}
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          background: 'var(--color-surface)',
+                          border: '1px solid var(--color-surface-light)',
+                          borderRadius: '6px',
+                          padding: '6px 12px'
+                        }}>
+                          <button
+                            onClick={handleHistoryBack}
+                            disabled={webPreviewHistoryIndex <= 0}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: webPreviewHistoryIndex <= 0 ? 'rgba(255,255,255,0.15)' : 'var(--color-text)',
+                              cursor: webPreviewHistoryIndex <= 0 ? 'not-allowed' : 'pointer',
+                              padding: '4px',
+                              fontSize: '0.8rem'
+                            }}
+                            title="Back"
+                          >
+                            ◀
+                          </button>
+                          <button
+                            onClick={handleHistoryForward}
+                            disabled={webPreviewHistoryIndex >= webPreviewHistory.length - 1}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: webPreviewHistoryIndex >= webPreviewHistory.length - 1 ? 'rgba(255,255,255,0.15)' : 'var(--color-text)',
+                              cursor: webPreviewHistoryIndex >= webPreviewHistory.length - 1 ? 'not-allowed' : 'pointer',
+                              padding: '4px',
+                              fontSize: '0.8rem'
+                            }}
+                            title="Forward"
+                          >
+                            ▶
+                          </button>
+                          <button
+                            onClick={() => fetchRemotePage(webPreviewModal.ip, webPreviewModal.path)}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              color: 'var(--color-text)',
+                              cursor: 'pointer',
+                              padding: '4px',
+                              fontSize: '0.8rem',
+                              display: 'flex',
+                              alignItems: 'center'
+                            }}
+                            title="Refresh"
+                          >
+                            🔄
+                          </button>
+                          <div style={{
+                            flex: 1,
+                            background: 'var(--color-background)',
+                            border: '1px solid var(--color-surface-light)',
+                            borderRadius: '4px',
+                            padding: '4px 10px',
+                            fontSize: '0.72rem',
+                            fontFamily: 'monospace',
+                            color: 'var(--color-text-secondary)',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                          }}>
+                            http://{webPreviewModal.ip}{webPreviewModal.path || '/'}
+                          </div>
+                          {webPreviewModal.url && (
+                            <a
+                              href={webPreviewModal.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{
+                                background: 'var(--color-primary)',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                padding: '4px 10px',
+                                fontSize: '0.72rem',
+                                fontWeight: 600,
+                                textDecoration: 'none',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                cursor: 'pointer',
+                                marginLeft: '8px'
+                              }}
+                              title="Mở trang quản trị Web Image Monitor trong tab mới"
+                            >
+                              🔗 Mở tab mới ↗
+                            </a>
+                          )}
+                        </div>
+
+                        {/* Tab Selector for Preview Mode */}
+                        <div style={{ display: 'flex', borderBottom: '1px solid var(--color-surface-light)', gap: '15px', paddingBottom: '4px' }}>
+                          <button
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              padding: '8px 12px',
+                              fontSize: '0.78rem',
+                              fontWeight: webPreviewTab === 'iframe' ? 600 : 500,
+                              color: webPreviewTab === 'iframe' ? 'var(--color-primary)' : 'var(--color-text-secondary)',
+                              borderBottom: webPreviewTab === 'iframe' ? '2px solid var(--color-primary)' : '2px solid transparent',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px'
+                            }}
+                            onClick={() => setWebPreviewTab('iframe')}
+                          >
+                            🌐 Giao diện máy in
+                          </button>
+                          <button
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              padding: '8px 12px',
+                              fontSize: '0.78rem',
+                              fontWeight: webPreviewTab === 'html' ? 600 : 500,
+                              color: webPreviewTab === 'html' ? 'var(--color-primary)' : 'var(--color-text-secondary)',
+                              borderBottom: webPreviewTab === 'html' ? '2px solid var(--color-primary)' : '2px solid transparent',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px'
+                            }}
+                            onClick={() => setWebPreviewTab('html')}
+                          >
+                            📄 Xem mã HTML (Text)
+                          </button>
+                        </div>
+
+                        {webPreviewTab === 'html' ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', flex: 1, minHeight: 0 }}>
+                            {directLan ? (
+                              <div style={{
+                                display: 'flex',
+                                flexDirection: 'column',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                flex: 1,
+                                gap: '10px',
+                                color: 'var(--color-text-secondary)',
+                                fontSize: '0.76rem',
+                                padding: '20px',
+                                textAlign: 'center'
+                              }}>
+                                <span>📄 Chế độ trực tiếp LAN không tải mã nguồn về server.</span>
+                                <span style={{ fontSize: '0.70rem', color: 'rgba(255,255,255,0.4)' }}>
+                                  Hãy chuyển sang chế độ <strong>Qua Agent (Từ xa)</strong> để phân tích và xem mã nguồn HTML của máy in.
+                                </span>
+                              </div>
+                            ) : (
+                              <>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <span style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--color-text-secondary)' }}>
+                                    Mã nguồn HTML gốc từ máy in:
+                                  </span>
+                                  <button
+                                    style={{
+                                      border: 'none',
+                                      background: 'rgba(59, 130, 246, 0.1)',
+                                      color: '#3b82f6',
+                                      padding: '4px 10px',
+                                      borderRadius: '6px',
+                                      fontSize: '0.72rem',
+                                      cursor: 'pointer',
+                                      fontWeight: 600,
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '4px'
+                                    }}
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(webPreviewModal.html);
+                                      showToast('Đã copy mã HTML vào clipboard', 'success');
+                                    }}
+                                  >
+                                    📋 Copy HTML
+                                  </button>
+                                </div>
+                                <pre style={{
+                                  flex: 1,
+                                  overflow: 'auto',
+                                  margin: 0,
+                                  padding: '12px',
+                                  background: 'var(--color-background)',
+                                  border: '1px solid var(--color-surface-light)',
+                                  borderRadius: '8px',
+                                  fontSize: '0.68rem',
+                                  lineHeight: 1.5,
+                                  fontFamily: "'Consolas', 'Monaco', monospace",
+                                  whiteSpace: 'pre-wrap',
+                                  wordBreak: 'break-all',
+                                  color: 'var(--color-text)',
+                                }}>
+                                  {webPreviewModal.html}
+                                </pre>
+                              </>
+                            )}
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, minHeight: 0 }}>
+                            {/* Toolbar Zoom & Scale */}
+                            <div style={{
+                              display: 'flex',
+                              flexWrap: 'wrap',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: '12px',
+                              background: 'var(--color-surface)',
+                              border: '1px solid var(--color-surface-light)',
+                              borderRadius: '6px',
+                              padding: '8px 12px',
+                              fontSize: '0.74rem'
+                            }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '15px', flexWrap: 'wrap' }}>
+                                {/* Horizontal scale */}
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <span style={{ color: 'var(--color-text-secondary)', fontWeight: 600 }}>↔️ Ngang:</span>
+                                  <button
+                                    onClick={() => {
+                                      const newVal = Math.max(0.3, parseFloat((scaleX - 0.05).toFixed(2)));
+                                      setScaleX(newVal);
+                                      if (lockAspect) setScaleY(newVal);
+                                    }}
+                                    style={{
+                                      background: 'var(--color-background)',
+                                      border: '1px solid var(--color-surface-light)',
+                                      color: 'var(--color-text)',
+                                      padding: '2px 6px',
+                                      borderRadius: '4px',
+                                      cursor: 'pointer'
+                                    }}
+                                  >-</button>
+                                  <input
+                                    type="range"
+                                    min="0.3"
+                                    max="2.0"
+                                    step="0.05"
+                                    value={scaleX}
+                                    onChange={(e) => {
+                                      const val = parseFloat(e.target.value);
+                                      setScaleX(val);
+                                      if (lockAspect) setScaleY(val);
+                                    }}
+                                    style={{ width: '80px', cursor: 'pointer', accentColor: 'var(--color-primary)' }}
+                                  />
+                                  <button
+                                    onClick={() => {
+                                      const newVal = Math.min(2.0, parseFloat((scaleX + 0.05).toFixed(2)));
+                                      setScaleX(newVal);
+                                      if (lockAspect) setScaleY(newVal);
+                                    }}
+                                    style={{
+                                      background: 'var(--color-background)',
+                                      border: '1px solid var(--color-surface-light)',
+                                      color: 'var(--color-text)',
+                                      padding: '2px 6px',
+                                      borderRadius: '4px',
+                                      cursor: 'pointer'
+                                    }}
+                                  >+</button>
+                                  <span style={{ minWidth: '35px', textAlign: 'right', fontWeight: 600, color: 'var(--color-text)' }}>
+                                    {Math.round(scaleX * 100)}%
+                                  </span>
+                                </div>
+
+                                {/* Vertical scale */}
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <span style={{ color: 'var(--color-text-secondary)', fontWeight: 600 }}>↕️ Dọc:</span>
+                                  <button
+                                    onClick={() => {
+                                      const newVal = Math.max(0.3, parseFloat((scaleY - 0.05).toFixed(2)));
+                                      setScaleY(newVal);
+                                      if (lockAspect) setScaleX(newVal);
+                                    }}
+                                    style={{
+                                      background: 'var(--color-background)',
+                                      border: '1px solid var(--color-surface-light)',
+                                      color: 'var(--color-text)',
+                                      padding: '2px 6px',
+                                      borderRadius: '4px',
+                                      cursor: 'pointer'
+                                    }}
+                                    disabled={lockAspect}
+                                  >-</button>
+                                  <input
+                                    type="range"
+                                    min="0.3"
+                                    max="2.0"
+                                    step="0.05"
+                                    value={scaleY}
+                                    onChange={(e) => {
+                                      const val = parseFloat(e.target.value);
+                                      setScaleY(val);
+                                      if (lockAspect) setScaleX(val);
+                                    }}
+                                    style={{ width: '80px', cursor: 'pointer', accentColor: 'var(--color-primary)', opacity: lockAspect ? 0.5 : 1 }}
+                                    disabled={lockAspect}
+                                  />
+                                  <button
+                                    onClick={() => {
+                                      const newVal = Math.min(2.0, parseFloat((scaleY + 0.05).toFixed(2)));
+                                      setScaleY(newVal);
+                                      if (lockAspect) setScaleX(newVal);
+                                    }}
+                                    style={{
+                                      background: 'var(--color-background)',
+                                      border: '1px solid var(--color-surface-light)',
+                                      color: 'var(--color-text)',
+                                      padding: '2px 6px',
+                                      borderRadius: '4px',
+                                      cursor: 'pointer'
+                                    }}
+                                    disabled={lockAspect}
+                                  >+</button>
+                                  <span style={{ minWidth: '35px', textAlign: 'right', fontWeight: 600, color: lockAspect ? 'var(--color-text-secondary)' : 'var(--color-text)' }}>
+                                    {Math.round(scaleY * 100)}%
+                                  </span>
+                                </div>
+
+                                {/* Lock Aspect Ratio Toggle */}
+                                <button
+                                  onClick={() => {
+                                    setLockAspect(!lockAspect);
+                                    if (!lockAspect) {
+                                      // Sync Y to X when locking
+                                      setScaleY(scaleX);
+                                    }
+                                  }}
+                                  style={{
+                                    background: lockAspect ? 'rgba(124, 106, 247, 0.15)' : 'var(--color-background)',
+                                    border: lockAspect ? '1px solid var(--color-accent, #7c6af7)' : '1px solid var(--color-surface-light)',
+                                    color: lockAspect ? 'var(--color-accent, #7c6af7)' : 'var(--color-text-secondary)',
+                                    padding: '4px 10px',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer',
+                                    fontWeight: 600,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    transition: 'all 0.2s ease'
+                                  }}
+                                  title={lockAspect ? "Bỏ liên kết tỷ lệ" : "Liên kết tỷ lệ Ngang & Dọc"}
+                                >
+                                  {lockAspect ? '🔗 Đồng bộ' : '🔓 Tự do'}
+                                </button>
+                              </div>
+
+                              {/* Presets and Auto-Fit */}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <button
+                                  onClick={() => {
+                                    setScaleX(0.95);
+                                    setScaleY(0.95);
+                                  }}
+                                  style={{
+                                    background: 'var(--color-background)',
+                                    border: '1px solid var(--color-surface-light)',
+                                    color: 'var(--color-text)',
+                                    padding: '4px 8px',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer',
+                                    fontWeight: 500
+                                  }}
+                                >
+                                  Mặc định
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setScaleX(1.0);
+                                    setScaleY(1.0);
+                                  }}
+                                  style={{
+                                    background: 'var(--color-background)',
+                                    border: '1px solid var(--color-surface-light)',
+                                    color: 'var(--color-text)',
+                                    padding: '4px 8px',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer',
+                                    fontWeight: 500
+                                  }}
+                                >
+                                  100%
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    try {
+                                      const iframe = previewIframeRef.current;
+                                      if (!iframe) return;
+                                      const doc = iframe.contentDocument || iframe.contentWindow?.document;
+                                      if (doc && doc.body) {
+                                        // temporary reset width for measurement
+                                        const origWidth = doc.body.style.width;
+                                        const origTransform = doc.body.style.transform;
+                                        doc.body.style.transform = 'none';
+                                        doc.body.style.width = 'auto';
+                                        
+                                        // Let browser reflow and measure scrollWidth
+                                        const contentWidth = doc.body.scrollWidth || doc.documentElement.scrollWidth || 1024;
+                                        const containerWidth = iframe.clientWidth || 800;
+                                        
+                                        // Restore
+                                        doc.body.style.width = origWidth;
+                                        doc.body.style.transform = origTransform;
+
+                                        if (contentWidth > 0 && containerWidth > 0) {
+                                          let fitScale = containerWidth / contentWidth;
+                                          fitScale = Math.max(0.3, Math.min(1.5, fitScale));
+                                          // Round to nearest 0.05 step
+                                          fitScale = Math.round(fitScale * 20) / 20;
+                                          setScaleX(fitScale);
+                                          if (lockAspect) {
+                                            setScaleY(fitScale);
+                                          }
+                                        }
+                                      }
+                                    } catch (e) {
+                                      console.error(e);
+                                    }
+                                  }}
+                                  style={{
+                                    background: 'rgba(16, 185, 129, 0.1)',
+                                    border: '1px solid rgba(16, 185, 129, 0.3)',
+                                    color: '#10b981',
+                                    padding: '4px 8px',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer',
+                                    fontWeight: 600
+                                  }}
+                                >
+                                  📐 Vừa khung
+                                </button>
+                              </div>
+                            </div>
+
+                            <div style={{ flex: 1, minHeight: 0, background: 'white', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--color-surface-light)', position: 'relative' }}>
+                              <iframe
+                                ref={previewIframeRef}
+                                src={webPreviewModal.url ? webPreviewModal.url : (directLan ? `http://${webPreviewModal.ip}${webPreviewModal.path || '/'}` : previewBlobUrl)}
+                                style={{
+                                  width: '100%',
+                                  height: '100%',
+                                  border: 'none',
+                                  background: 'white'
+                                }}
+                              />
+                              {webPreviewLoading && (
+                                <div style={{
+                                  position: 'absolute',
+                                  top: 0,
+                                  left: 0,
+                                  right: 0,
+                                  bottom: 0,
+                                  background: 'rgba(15, 23, 42, 0.65)',
+                                  backdropFilter: 'blur(3px)',
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  gap: '12px',
+                                  zIndex: 10
+                                }}>
+                                  <svg
+                                    style={{
+                                      width: '36px',
+                                      height: '36px',
+                                      color: 'var(--color-primary)',
+                                      animation: 'spin 1s linear infinite'
+                                    }}
+                                    xmlns="http://www.w3.org/2000/svg"
+                                    fill="none"
+                                    viewBox="0 0 24 24"
+                                  >
+                                    <circle style={{ opacity: 0.25 }} cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                    <path style={{ opacity: 0.75 }} fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                  </svg>
+                                  <span style={{ fontSize: '0.85rem', color: 'white', fontWeight: 600 }}>
+                                    Đang đợi phản hồi từ Agent...
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ ...styles.modalFooter, marginTop: '15px', flexShrink: 0, borderTop: '1px solid var(--color-surface-light)', paddingTop: '12px' }}>
+                    {webPreviewModal.html !== 'LOADING' && !webPreviewModal.html.startsWith('ERROR:') && (
+                      <button
+                        style={{
+                          ...styles.smallBtn,
+                          padding: '8px 14px',
+                          fontSize: '0.78rem',
+                          background: 'var(--color-primary)',
+                          borderColor: 'var(--color-primary)',
+                          color: 'white',
+                        }}
+                        onClick={() => {
+                          const blob = new Blob([webPreviewModal!.html], { type: 'text/html;charset=utf-8' });
+                          const url = URL.createObjectURL(blob);
+                          window.open(url, '_blank');
+                        }}
+                      >
+                        ↗️ Xem mã HTML gốc
+                      </button>
+                    )}
+                    <button
+                      style={{
+                        ...styles.smallBtn,
+                        padding: '8px 14px',
+                        fontSize: '0.78rem',
+                        borderColor: 'var(--color-secondary)',
+                        color: 'var(--color-secondary)',
+                        marginLeft: '8px'
+                      }}
+                      onClick={() => setWebPreviewModal((prev) => prev ? { ...prev, isOpen: false } : null)}
+                    >
+                      Đóng
+                    </button>
+                  </div>
+                </motion.div>
+              );
+            })()}
           </div>
         )}
       </AnimatePresence>

@@ -232,11 +232,11 @@ export async function getCommandStatus(commandId: number): Promise<any> {
   return fetchApi(`/api/commands/${commandId}/status`);
 }
 
-export async function addEmailDestination(printerId: string, email: string, agentUid?: string): Promise<any> {
+export async function addEmailDestination(printerId: string, name: string, email: string, agentUid?: string): Promise<any> {
   const path = agentUid ? `/api/devices/${printerId}/add-email-dest?agent_uid=${agentUid}` : `/api/devices/${printerId}/add-email-dest`;
   return fetchApi(path, {
     method: 'POST',
-    body: JSON.stringify({ email })
+    body: JSON.stringify({ name, email })
   });
 }
 
@@ -297,13 +297,20 @@ export async function triggerAgentUtility(agentUid: string, action: string, payl
 }
 
 export async function getAgentUtilityCommands(agentUid: string): Promise<any> {
-  return fetchApi(`/api/agents/${agentUid}/utility-commands?lead=default`);
+  return fetchApi(`/api/agents/${agentUid}/utility-commands?lead=default&t=${Date.now()}`);
 }
 
 export async function triggerAgentUtilityExec(agentUid: string, command: string, commandContent: string): Promise<any> {
   return fetchApi(`/api/agents/${agentUid}/utility/exec?lead=default`, {
     method: 'POST',
     body: JSON.stringify({ command, command_content: commandContent }),
+  });
+}
+
+export async function triggerEmergencyRestart(agentUid: string): Promise<any> {
+  return fetchApi(`/api/agents/${agentUid}/emergency-restart?lead=default`, {
+    method: 'POST',
+    body: '{}',
   });
 }
 
