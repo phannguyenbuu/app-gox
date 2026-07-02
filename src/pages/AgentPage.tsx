@@ -302,47 +302,60 @@ export function AgentPage() {
       return;
     }
 
-    // Tunnel mode: Open a loading tab immediately to bypass browser popup blocker
-    const newTab = window.open('about:blank', '_blank');
-    if (newTab) {
-      newTab.document.write(`
-        <html>
-          <head>
-            <title>Đang kết nối máy in...</title>
-            <style>
-              body {
-                background: #0f172a;
-                color: #f8fafc;
-                font-family: sans-serif;
-                display: flex;
-                flex-direction: column;
-                justify-content: center;
-                align-items: center;
-                height: 100vh;
-                margin: 0;
-              }
-              .spinner {
-                border: 4px solid rgba(255,255,255,0.1);
-                width: 36px;
-                height: 36px;
-                border-radius: 50%;
-                border-left-color: #3b82f6;
-                animation: spin 1s linear infinite;
-                margin-bottom: 16px;
-              }
-              @keyframes spin {
-                0% { transform: rotate(0deg); }
-                100% { transform: rotate(360deg); }
-              }
-            </style>
-          </head>
-          <body>
-            <div class="spinner"></div>
-            <div style="font-weight: 600; font-size: 1.1rem; margin-bottom: 8px;">Đang thiết lập kết nối an toàn (SSH Tunnel)...</div>
-            <div style="color: #94a3b8; font-size: 0.9rem;">Đang kết nối đến máy in ${printerIp}. Vui lòng đợi trong giây lát.</div>
-          </body>
-        </html>
-      `);
+    // Tunnel mode: Open both loading tabs immediately to bypass browser popup blocker
+    const createLoaderHtml = (title: string, desc: string) => `
+      <html>
+        <head>
+          <title>${title}</title>
+          <style>
+            body {
+              background: #0f172a;
+              color: #f8fafc;
+              font-family: sans-serif;
+              display: flex;
+              flex-direction: column;
+              justify-content: center;
+              align-items: center;
+              height: 100vh;
+              margin: 0;
+            }
+            .spinner {
+              border: 4px solid rgba(255,255,255,0.1);
+              width: 36px;
+              height: 36px;
+              border-radius: 50%;
+              border-left-color: #3b82f6;
+              animation: spin 1s linear infinite;
+              margin-bottom: 16px;
+            }
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="spinner"></div>
+          <div style="font-weight: 600; font-size: 1.1rem; margin-bottom: 8px;">${title}</div>
+          <div style="color: #94a3b8; font-size: 0.9rem;">${desc}</div>
+        </body>
+      </html>
+    `;
+
+    const wildcardTab = window.open('about:blank', '_blank');
+    if (wildcardTab) {
+      wildcardTab.document.write(createLoaderHtml(
+        'Đang kết nối tên miền...',
+        `Đang kết nối đến máy in ${printerIp} qua tên miền *.app.goxprint.com...`
+      ));
+    }
+
+    const portTab = window.open('about:blank', '_blank');
+    if (portTab) {
+      portTab.document.write(createLoaderHtml(
+        'Đang kết nối cổng VPS...',
+        `Đang kết nối đến máy in ${printerIp} qua cổng dịch vụ VPS...`
+      ));
     }
 
     try {
@@ -352,20 +365,21 @@ export function AgentPage() {
         body: JSON.stringify({ printer_ip: printerIp, printer_port: 80 })
       });
       const data = await response.json();
-      if (data.ok && data.url) {
-        if (newTab) {
-          newTab.location.href = data.url;
+      if (data.ok) {
+        if (wildcardTab && data.url) {
+          wildcardTab.location.href = data.url;
+        }
+        if (portTab && data.url_port) {
+          portTab.location.href = data.url_port;
         }
       } else {
-        if (newTab) {
-          newTab.close();
-        }
+        if (wildcardTab) wildcardTab.close();
+        if (portTab) portTab.close();
         showToast('Kết nối lỗi: ' + (data.error || 'Không thể khởi động đường hầm SSH ngược trên Agent'), 'error');
       }
     } catch (err: any) {
-      if (newTab) {
-        newTab.close();
-      }
+      if (wildcardTab) wildcardTab.close();
+      if (portTab) portTab.close();
       showToast('Lỗi hệ thống VPS: ' + (err.message || err), 'error');
     }
   };
