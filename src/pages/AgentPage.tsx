@@ -292,30 +292,57 @@ export function AgentPage() {
     const activeAgentUid = agentUidParam || webPreviewModal?.agentUid;
     if (!activeAgentUid) {
       console.error('No agent UID available for remote page fetch');
+      showToast('Không tìm thấy Target Agent UID', 'error');
       return;
     }
-    
-    setWebPreviewModal({
-      isOpen: true,
-      title: 'Thiết lập kết nối an toàn - ' + printerIp,
-      ip: printerIp,
-      agentUid: activeAgentUid,
-      html: 'LOADING',
-      path: targetPath || ''
-    });
-    setWebPreviewLoading(true);
 
     if (directLan) {
-      setWebPreviewModal({
-        isOpen: true,
-        title: 'Kết nối trực tiếp LAN - ' + printerIp,
-        ip: printerIp,
-        agentUid: activeAgentUid,
-        html: 'DIRECT_LAN',
-        path: targetPath || ''
-      });
-      setWebPreviewLoading(false);
+      // Direct LAN mode: Open directly in a new tab immediately
+      window.open(`http://${printerIp}${targetPath || '/'}`, '_blank');
       return;
+    }
+
+    // Tunnel mode: Open a loading tab immediately to bypass browser popup blocker
+    const newTab = window.open('about:blank', '_blank');
+    if (newTab) {
+      newTab.document.write(`
+        <html>
+          <head>
+            <title>Đang kết nối máy in...</title>
+            <style>
+              body {
+                background: #0f172a;
+                color: #f8fafc;
+                font-family: sans-serif;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+              }
+              .spinner {
+                border: 4px solid rgba(255,255,255,0.1);
+                width: 36px;
+                height: 36px;
+                border-radius: 50%;
+                border-left-color: #3b82f6;
+                animation: spin 1s linear infinite;
+                margin-bottom: 16px;
+              }
+              @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+              }
+            </style>
+          </head>
+          <body>
+            <div class="spinner"></div>
+            <div style="font-weight: 600; font-size: 1.1rem; margin-bottom: 8px;">Đang thiết lập kết nối an toàn (SSH Tunnel)...</div>
+            <div style="color: #94a3b8; font-size: 0.9rem;">Đang kết nối đến máy in ${printerIp}. Vui lòng đợi trong giây lát.</div>
+          </body>
+        </html>
+      `);
     }
 
     try {
@@ -326,36 +353,20 @@ export function AgentPage() {
       });
       const data = await response.json();
       if (data.ok && data.url) {
-        setWebPreviewModal({
-          isOpen: true,
-          title: 'Kết nối Máy photocopy - ' + printerIp,
-          ip: printerIp,
-          agentUid: activeAgentUid,
-          html: 'TUNNEL_CONNECTED',
-          path: targetPath || '',
-          url: data.url
-        });
+        if (newTab) {
+          newTab.location.href = data.url;
+        }
       } else {
-        setWebPreviewModal({
-          isOpen: true,
-          title: 'Kết nối lỗi - ' + printerIp,
-          ip: printerIp,
-          agentUid: activeAgentUid,
-          html: 'ERROR: ' + (data.error || 'Không thể khởi động đường hầm SSH ngược trên Agent'),
-          path: targetPath || ''
-        });
+        if (newTab) {
+          newTab.close();
+        }
+        showToast('Kết nối lỗi: ' + (data.error || 'Không thể khởi động đường hầm SSH ngược trên Agent'), 'error');
       }
     } catch (err: any) {
-      setWebPreviewModal({
-        isOpen: true,
-        title: 'Kết nối lỗi - ' + printerIp,
-        ip: printerIp,
-        agentUid: activeAgentUid,
-        html: 'ERROR: Lỗi hệ thống VPS: ' + (err.message || err),
-        path: targetPath || ''
-      });
-    } finally {
-      setWebPreviewLoading(false);
+      if (newTab) {
+        newTab.close();
+      }
+      showToast('Lỗi hệ thống VPS: ' + (err.message || err), 'error');
     }
   };
 
