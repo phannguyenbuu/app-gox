@@ -388,28 +388,94 @@ export function RequestDetailPage() {
           <span title={PRIORITY_LABELS[request.priority]}>
             <PriorityBadge priority={request.priority} />
           </span>
-          <span style={styles.metaText}>📍 {requestLocation ? requestLocation.name : request.locationId}</span>
+          <span style={styles.metaText}>📍 {request.machineLocationName || requestLocation?.name || request.locationId}</span>
           <span style={styles.metaText}>{formatDate(request.createdAt)}</span>
         </div>
-        {/* Location details */}
-        {requestLocation && (
-          <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column' as const, gap: '3px' }}>
-            {requestLocation.address && (
-              <span style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
-                🏠 {requestLocation.address}
-              </span>
-            )}
-            {requestLocation.phone && (
-              <span style={{ fontSize: '0.8rem' }}>
-                📞{' '}
-                <a href={`tel:${requestLocation.phone}`} style={{ color: 'var(--color-primary)', textDecoration: 'none', fontSize: '0.8rem' }}>
-                  {requestLocation.phone}
-                </a>
-              </span>
-            )}
+        {request.macAddress && (
+          <div style={{ marginTop: '6px' }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)', fontFamily: 'monospace' }}>
+              🖥️ MAC: {request.macAddress}
+            </span>
           </div>
         )}
       </GlowCard>
+
+      {/* Thông tin khách hàng */}
+      {(request.customerName || request.customerPhone || request.customerEmail || request.customerAddress) && (
+        <GlowCard>
+          <h2 style={styles.sectionTitle}>👤 Thông tin khách hàng</h2>
+          <div style={{ display: 'flex', flexDirection: 'column' as const, gap: '8px' }}>
+            {request.customerName && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '1rem' }}>🏢</span>
+                <span style={{ fontSize: '0.9rem', color: 'var(--color-text)', fontWeight: 600 }}>{request.customerName}</span>
+              </div>
+            )}
+            {request.customerPhone && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '1rem' }}>📞</span>
+                <a href={`tel:${request.customerPhone}`} style={{ color: 'var(--color-primary)', textDecoration: 'none', fontSize: '0.88rem' }}>
+                  {request.customerPhone}
+                </a>
+              </div>
+            )}
+            {request.customerEmail && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '1rem' }}>✉️</span>
+                <a href={`mailto:${request.customerEmail}`} style={{ color: 'var(--color-primary)', textDecoration: 'none', fontSize: '0.88rem' }}>
+                  {request.customerEmail}
+                </a>
+              </div>
+            )}
+            {request.customerAddress && (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                <span style={{ fontSize: '1rem' }}>🏠</span>
+                <span style={{ fontSize: '0.85rem', color: 'var(--color-text-secondary)', lineHeight: 1.4 }}>{request.customerAddress}</span>
+              </div>
+            )}
+          </div>
+        </GlowCard>
+      )}
+
+      {/* Thông tin máy từ quản lý MAC ID */}
+      {(request.machineLocationName || request.machineLocationAddress || request.machineContactEmails?.length || request.machineInCharge) && (
+        <GlowCard>
+          <h2 style={styles.sectionTitle}>🖨️ Thông tin máy</h2>
+          <div style={{ display: 'flex', flexDirection: 'column' as const, gap: '8px' }}>
+            {request.machineLocationName && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '1rem' }}>📍</span>
+                <span style={{ fontSize: '0.9rem', color: 'var(--color-text)', fontWeight: 600 }}>{request.machineLocationName}</span>
+              </div>
+            )}
+            {request.machineLocationAddress && (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                <span style={{ fontSize: '1rem' }}>🏠</span>
+                <span style={{ fontSize: '0.85rem', color: 'var(--color-text-secondary)', lineHeight: 1.4 }}>{request.machineLocationAddress}</span>
+              </div>
+            )}
+            {request.machineInCharge && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '1rem' }}>👷</span>
+                <span style={{ fontSize: '0.88rem', color: 'var(--color-text)' }}>Phụ trách: <strong>{request.machineInCharge}</strong></span>
+              </div>
+            )}
+            {request.machineContactEmails && request.machineContactEmails.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column' as const, gap: '4px' }}>
+                {request.machineContactEmails.map((email) => (
+                  <div key={email} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '1rem' }}>✉️</span>
+                    <a href={`mailto:${email}`} style={{ color: 'var(--color-primary)', textDecoration: 'none', fontSize: '0.85rem' }}>
+                      {email}
+                    </a>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </GlowCard>
+      )}
+
 
       {/* Assignee Info */}
       {request.assignedTo && (

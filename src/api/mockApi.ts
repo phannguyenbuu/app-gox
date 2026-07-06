@@ -7,6 +7,46 @@ const BASE_URL = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com
 const PUBLIC_BASE_URL = import.meta.env.VITE_PUBLIC_API_URL || 'https://app.quanlymay.com';
 const publicUserNames = new Map<string, string>();
 
+// Cache: mac_id (uppercase) → thông tin LAN site
+interface MacSiteInfo {
+  locationName: string;
+  locationAddress?: string;
+  contactEmails?: string[];
+  inCharge?: string;
+}
+const macToSiteCache = new Map<string, MacSiteInfo>();
+let macLocationCacheReady = false;
+
+async function ensureMacLocationCache(): Promise<void> {
+  if (macLocationCacheReady) return;
+  try {
+    const res = await fetchApi('/api/lan-sites?lead=default');
+    const rows: any[] = res.rows || [];
+    rows.forEach((row: any) => {
+      const locationName = String(row.lan_name || row.lan_uid || '').trim();
+      if (!locationName) return;
+      const locationAddress = row.address ? String(row.address).trim() : undefined;
+      const rawEmails: any[] = Array.isArray(row.emails) ? row.emails : [];
+      const contactEmails = rawEmails
+        .map((e: any) => String(e.email || e || '').trim())
+        .filter(Boolean);
+      const inCharge = rawEmails
+        .map((e: any) => String(e.name || e.full_name || '').trim())
+        .filter(Boolean)[0];
+
+      (row.printers || []).forEach((p: any) => {
+        const macId = String(p.mac_id || '').trim().toUpperCase();
+        if (macId) {
+          macToSiteCache.set(macId, { locationName, locationAddress, contactEmails, inCharge });
+        }
+      });
+    });
+    macLocationCacheReady = true;
+  } catch {
+    // sẽ thử lại ở lần gọi tiếp theo
+  }
+}
+
 async function fetchApi(path: string, options: RequestInit = {}) {
   const res = await fetch(`${BASE_URL}${path}`, {
     ...options,
@@ -313,7 +353,30 @@ function mapTaskStatus(status: string): RepairStatus {
 function mapIncidentTaskToRequest(task: any, workspace: any | null, profile: any | null): RepairRequest {
   const workspaceId = String(task.workspace_id || workspace?.workspace_id || 'crm-db');
   const workspaceName = String(task.workspace_name || workspace?.workspace_name || profile?.workspace_name || '').trim();
-  const locationLabel = String(task.mac_id || (task.customer_id != null ? `customer-${task.customer_id}` : '') || workspaceName || workspaceId).trim() || 'Chưa rõ vị trí';
+
+  // Tra cứu thông tin địa điểm từ mac_id trong cache LAN sites
+  const rawMacId = String(task.mac_id || '').trim();
+  const siteInfo = rawMacId
+    ? (macToSiteCache.get(rawMacId.toUpperCase()) || macToSiteCache.get(rawMacId))
+    : undefined;
+  const locationLabel = siteInfo?.locationName || workspaceName || workspaceId || 'Chưa rõ vị trí';
+
+  // Thông tin khách hàng từ profile / workspace
+  const customerName = String(
+    task.customer_name || profile?.full_name || profile?.name ||
+    workspace?.company_name || workspace?.workspace_name || workspace?.customer_name || ''
+  ).trim() || undefined;
+  const customerPhone = String(
+    task.customer_phone || profile?.phone || profile?.phone_number ||
+    workspace?.phone || workspace?.phone_number || ''
+  ).trim() || undefined;
+  const customerEmail = String(
+    task.customer_email || profile?.email || ''
+  ).trim() || undefined;
+  const customerAddress = String(
+    task.customer_address || workspace?.address || profile?.address || ''
+  ).trim() || undefined;
+
   const assignedTo = task.assignee_id != null && String(task.assignee_id).trim() !== ''
     ? String(task.assignee_id)
     : null;
@@ -381,6 +444,17 @@ function mapIncidentTaskToRequest(task: any, workspace: any | null, profile: any
     updatedAt: String(task.updated_at || task.updateAt || task.status_updated_at || task.created_at || new Date().toISOString()),
     acceptedAt: task.assigned_at ? String(task.assigned_at) : null,
     completedAt,
+    // Thông tin khách hàng
+    customerName,
+    customerPhone,
+    customerEmail,
+    customerAddress,
+    // Thông tin máy từ quản lý MAC ID
+    macAddress: rawMacId || undefined,
+    machineLocationName: siteInfo?.locationName,
+    machineLocationAddress: siteInfo?.locationAddress,
+    machineContactEmails: siteInfo?.contactEmails?.length ? siteInfo.contactEmails : undefined,
+    machineInCharge: siteInfo?.inCharge,
   };
 }
 // --- Auth ---
@@ -536,6 +610,8 @@ export async function mockGetRequests(
   email?: string,
 ): Promise<RepairRequest[]> {
   if (email) {
+    // Đảm bảo cache mac_id → địa điểm đã được tải
+    await ensureMacLocationCache();
     const data = await apiIncidentsByEmail(email);
     let requests = data.tasks.map((task: any) => mapIncidentTaskToRequest(task, data.workspace, data.profile));
 

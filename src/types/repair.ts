@@ -48,6 +48,19 @@ export interface RepairRequest {
   updatedAt: string;
   acceptedAt: string | null;
   completedAt: string | null;
+
+  // Thông tin khách hàng
+  customerName?: string;
+  customerPhone?: string;
+  customerEmail?: string;
+  customerAddress?: string;
+
+  // Thông tin máy từ quản lý MAC ID
+  macAddress?: string;
+  machineLocationName?: string;
+  machineLocationAddress?: string;
+  machineContactEmails?: string[];
+  machineInCharge?: string;
 }
 
 export interface RepairRequestFilters {
