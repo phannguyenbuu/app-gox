@@ -282,6 +282,15 @@ export async function getAgentSettings(agentUid: string): Promise<any> {
   return fetchApi(`/api/agents/${agentUid}/settings?lead=default`);
 }
 
+export async function getJobs(lead?: string, lanUid?: string, agentUid?: string): Promise<any> {
+  const params = new URLSearchParams();
+  if (lead) params.append('lead', lead);
+  if (lanUid) params.append('lan_uid', lanUid);
+  if (agentUid) params.append('agent_uid', agentUid);
+  params.append('t', Date.now().toString());
+  return fetchApi(`/api/jobs?${params.toString()}`);
+}
+
 export async function updateAgentSettings(agentUid: string, settings: { scan_auto_open_file?: boolean; scan_auto_open_dir?: boolean }): Promise<any> {
   return fetchApi(`/api/agents/${agentUid}/settings?lead=default`, {
     method: 'POST',
