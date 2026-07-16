@@ -138,6 +138,9 @@ export interface LanSiteInfo {
   agents: any[];
   emails: any[];
   printers: any[];
+  label?: string;
+  agent_count?: number;
+  printer_count?: number;
 }
 
 export async function getLanSites(): Promise<LanSiteInfo[]> {
@@ -146,6 +149,32 @@ export async function getLanSites(): Promise<LanSiteInfo[]> {
     return res.rows || [];
   } catch (err) {
     console.error('Failed to fetch LAN sites:', err);
+    return [];
+  }
+}
+
+export async function getLanInfoByEmail(email: string): Promise<LanSiteInfo[]> {
+  try {
+    const PUBLIC_BASE_URL = import.meta.env.VITE_PUBLIC_API_URL || 'https://app.quanlymay.com';
+    const res = await fetch(`${PUBLIC_BASE_URL}/api/app-db/network/lan-info`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email }),
+    });
+    const data = await res.json();
+    if (data.success && data.data && data.data.lans) {
+      return data.data.lans.map((lan: any) => ({
+        ...lan,
+        agents: lan.agents || [],
+        printers: lan.printers || [],
+        emails: lan.emails || []
+      }));
+    }
+    return [];
+  } catch (err) {
+    console.error('Failed to fetch LAN info by email:', err);
     return [];
   }
 }

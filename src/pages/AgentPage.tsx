@@ -20,8 +20,10 @@ import {
   triggerAgentUtility,
   getAgentUtilityCommands,
   triggerAgentUtilityExec,
+  getLanInfoByEmail,
 } from '../api/mockAgentApi';
 import type { LanSiteInfo } from '../api/mockAgentApi';
+import { useAuthStore } from '../stores/authStore';
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
 
@@ -86,6 +88,7 @@ function safePathToken(value: string): string {
 }
 
 export function AgentPage() {
+  const { user } = useAuthStore();
   const [lanSites, setLanSites] = useState<LanSiteInfo[]>([]);
   const [selectedLanUid, setSelectedLanUid] = useState<string>(() => {
     return localStorage.getItem('goxprint_selected_lan_uid') || '';
@@ -201,7 +204,15 @@ export function AgentPage() {
   const fetchLanSitesData = useCallback(async (showLoader = false) => {
     if (showLoader) setLanSitesLoading(true);
     try {
-      const data = await getLanSites();
+      let data: LanSiteInfo[] = [];
+      const email = user?.email || 'email_cua_ky_thuat_hoac_admin@domain.com';
+      data = await getLanInfoByEmail(email);
+      
+      // If empty fallback to old getLanSites to preserve functionality if email doesn't work
+      if (!data || data.length === 0) {
+        data = await getLanSites();
+      }
+
       setLanSites(data);
       
       // Auto select first LAN if none selected or invalid
@@ -221,7 +232,7 @@ export function AgentPage() {
     } finally {
       if (showLoader) setLanSitesLoading(false);
     }
-  }, [showToast]);
+  }, [showToast, user?.email]);
 
   useEffect(() => {
     fetchLanSitesData(true);
@@ -302,6 +313,7 @@ export function AgentPage() {
   const [utilitySettingsLoading, setUtilitySettingsLoading] = useState(false);
   const [utilityActionPending, setUtilityActionPending] = useState<string | null>(null);
   const [utilityStatusMsg, setUtilityStatusMsg] = useState<{ text: string; isError: boolean } | null>(null);
+  const [utilityOutput, setUtilityOutput] = useState<string | null>(null);
   const [utilityCommands, setUtilityCommands] = useState<any[]>([]);
   const [utilityCommandsLoading, setUtilityCommandsLoading] = useState(false);
   const [customRunCommand, setCustomRunCommand] = useState('');
@@ -405,6 +417,33 @@ export function AgentPage() {
           if (statusRes.status === 'success') {
             clearInterval(timer);
             setUtilityStatusMsg({ text: '⚡ Thực hiện lệnh tiện ích thành công!', isError: false });
+            
+            const cleanObj = { ...statusRes };
+            delete cleanObj.status;
+            delete cleanObj.id;
+            delete cleanObj.created_at;
+            delete cleanObj.updated_at;
+            delete cleanObj.received_at;
+            delete cleanObj.command_id;
+            
+            let outputText = '';
+            if (typeof cleanObj.output === 'string') outputText = cleanObj.output;
+            else if (typeof cleanObj.result === 'string') outputText = cleanObj.result;
+            else if (typeof cleanObj.data === 'string') outputText = cleanObj.data;
+            else if (typeof cleanObj.result_data === 'string') outputText = cleanObj.result_data;
+            else if (cleanObj.exec_result && typeof cleanObj.exec_result.output === 'string') outputText = cleanObj.exec_result.output;
+            else if (Object.keys(cleanObj).length > 0) {
+              outputText = JSON.stringify(cleanObj, null, 2);
+            }
+
+            if (outputText && outputText !== '{}' && outputText.trim() !== '') {
+              setUtilityOutput(outputText);
+              window.alert('Debug FB (đã nhận KQ): ' + outputText.substring(0, 100));
+            } else {
+              setUtilityOutput('Lệnh mở/chạy tiện ích đã được kích hoạt thành công trên máy tính khách (Agent). Thao tác này sẽ hiển thị hoặc chạy ngầm trên PC đó.');
+              window.alert('Debug FB (KQ rỗng): ' + cleanObj);
+            }
+            
             setUtilityActionPending(null);
           } else if (statusRes.status === 'failed' || !statusRes.ok) {
             clearInterval(timer);
@@ -459,6 +498,32 @@ export function AgentPage() {
           if (statusRes.status === 'success') {
             clearInterval(timer);
             setUtilityStatusMsg({ text: '⚡ Thực hiện lệnh thành công!', isError: false });
+            
+            const cleanObj = { ...statusRes };
+            delete cleanObj.status;
+            delete cleanObj.id;
+            delete cleanObj.created_at;
+            delete cleanObj.updated_at;
+            delete cleanObj.received_at;
+            delete cleanObj.command_id;
+            
+            let outputText = '';
+            if (typeof cleanObj.output === 'string') outputText = cleanObj.output;
+            else if (typeof cleanObj.result === 'string') outputText = cleanObj.result;
+            else if (typeof cleanObj.data === 'string') outputText = cleanObj.data;
+            else if (typeof cleanObj.result_data === 'string') outputText = cleanObj.result_data;
+            else if (cleanObj.exec_result && typeof cleanObj.exec_result.output === 'string') outputText = cleanObj.exec_result.output;
+            else if (Object.keys(cleanObj).length > 0) {
+              outputText = JSON.stringify(cleanObj, null, 2);
+            }
+
+            if (outputText && outputText !== '{}' && outputText.trim() !== '') {
+              setUtilityOutput(outputText);
+              window.alert('Debug (đã nhận KQ): ' + outputText.substring(0, 100));
+            } else {
+              setUtilityOutput('Lệnh thực hiện thành công nhưng không có dữ liệu trả về.\n(Có thể kết quả đã được thực thi ngầm trên máy Agent).');
+              window.alert('Debug (KQ rỗng): ' + cleanObj);
+            }
             setUtilityActionPending(null);
           } else if (statusRes.status === 'failed' || !statusRes.ok) {
             clearInterval(timer);
@@ -654,6 +719,13 @@ export function AgentPage() {
         }
       } catch (err: any) {
         console.warn('Poll command error:', err.message);
+        clearInterval(timer);
+        setCommandStatus((prev) => {
+          const updated = { ...prev };
+          delete updated[targetKey];
+          return updated;
+        });
+        onFailed(err.message || 'Lỗi khi kiểm tra trạng thái lệnh');
       }
     }, pollInterval);
   };
@@ -1162,7 +1234,7 @@ export function AgentPage() {
             >
               {lanSites.map((site) => (
                 <option key={site.lan_uid} value={site.lan_uid}>
-                  {site.lan_name || site.lan_uid} ({site.active_agents} Agent - {site.printers?.length ?? 0} máy Photo)
+                  {site.label || site.lan_name || site.lan_uid} ({site.agent_count ?? site.active_agents ?? site.agents?.length ?? 0} Agent - {site.printer_count ?? site.printers?.length ?? 0} máy Photo)
                 </option>
               ))}
             </select>
@@ -1173,23 +1245,27 @@ export function AgentPage() {
         <div style={styles.tabBar}>
           <button
             style={{
-              ...styles.tabBtn,
-              color: activeTab === 'agents' ? 'var(--color-primary)' : 'var(--color-text-secondary)',
-              borderBottom: activeTab === 'agents' ? '2px solid var(--color-primary)' : '2px solid transparent',
+              flex: '1 1 0%', padding: '10px 4px', fontSize: '0.82rem', fontWeight: 700, textAlign: 'center', background: 'none',
+              borderTopWidth: 'medium', borderRightWidth: 'medium', borderBottom: activeTab === 'agents' ? '2px solid var(--color-primary)' : '2px solid transparent',
+              borderLeftWidth: 'medium', borderTopStyle: 'none', borderRightStyle: 'none', borderLeftStyle: 'none',
+              borderTopColor: 'currentcolor', borderRightColor: 'currentcolor', borderLeftColor: 'currentcolor', borderImage: 'none',
+              cursor: 'pointer', transition: 'color var(--anim-fast)', color: activeTab === 'agents' ? 'var(--color-primary)' : 'var(--color-text-secondary)',
             }}
             onClick={() => setActiveTab('agents')}
           >
-            💻 Máy tính ({selectedLan?.agents?.length ?? 0})
+            💻 Máy tính ({selectedLan?.agent_count ?? selectedLan?.agents?.length ?? 0})
           </button>
           <button
             style={{
-              ...styles.tabBtn,
-              color: activeTab === 'copiers' ? 'var(--color-primary)' : 'var(--color-text-secondary)',
-              borderBottom: activeTab === 'copiers' ? '2px solid var(--color-primary)' : '2px solid transparent',
+              flex: '1 1 0%', padding: '10px 4px', fontSize: '0.82rem', fontWeight: 700, textAlign: 'center', background: 'none',
+              borderTopWidth: 'medium', borderRightWidth: 'medium', borderBottom: activeTab === 'copiers' ? '2px solid var(--color-primary)' : '2px solid transparent',
+              borderLeftWidth: 'medium', borderTopStyle: 'none', borderRightStyle: 'none', borderLeftStyle: 'none',
+              borderTopColor: 'currentcolor', borderRightColor: 'currentcolor', borderLeftColor: 'currentcolor', borderImage: 'none',
+              cursor: 'pointer', transition: 'color var(--anim-fast)', color: activeTab === 'copiers' ? 'var(--color-primary)' : 'var(--color-text-secondary)',
             }}
             onClick={() => setActiveTab('copiers')}
           >
-            🖨️ Photocopy ({filteredPrinters.length})
+            🖨️ Photocopy ({selectedLan?.printer_count ?? filteredPrinters.length})
           </button>
         </div>
       </div>
@@ -2284,6 +2360,7 @@ export function AgentPage() {
                         setActiveModal(null);
                         setSelectedUtilityAgent(null);
                         setUtilityStatusMsg(null);
+                        setUtilityOutput(null);
                       }}
                     >
                       &times;
@@ -2306,6 +2383,19 @@ export function AgentPage() {
                         }}
                       >
                         {utilityStatusMsg.text}
+                      </div>
+                    )}
+                    
+                    {/* Output block */}
+                    {utilityOutput && (
+                      <div style={{ position: 'relative' }}>
+                        <button 
+                          onClick={() => setUtilityOutput(null)}
+                          style={{ position: 'absolute', top: '8px', right: '8px', background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', padding: '4px 8px', fontSize: '1rem' }}
+                        >&times;</button>
+                        <pre style={{ margin: 0, padding: '12px 12px 12px 12px', background: '#1e1e1e', color: '#d4d4d4', borderRadius: '8px', fontSize: '0.75rem', overflowX: 'auto', maxHeight: '400px', whiteSpace: 'pre-wrap', border: '1px solid #333' }}>
+                          {utilityOutput}
+                        </pre>
                       </div>
                     )}
 
@@ -2372,7 +2462,26 @@ export function AgentPage() {
                             .map((cmd: any) => (
                               <button
                                 key={cmd.command}
-                                onClick={() => handleTriggerUtilityExec(cmd.command, cmd.command_content)}
+                                onClick={() => {
+                                  setUtilityOutput(null);
+                                  let finalContent = cmd.command_content;
+                                  
+                                  if (cmd.command === 'change_ip' || (cmd.label || '').toLowerCase().includes('đổi ip')) {
+                                    const ip = window.prompt('Nhập IP tĩnh mới (ví dụ: 192.168.1.100):');
+                                    if (!ip) return;
+                                    finalContent = ip;
+                                  } else if (cmd.command === 'check_ip' || (cmd.label || '').toLowerCase().includes('kiểm tra ip')) {
+                                    const ip = window.prompt('Nhập IP của máy Photocopy cần kiểm tra:');
+                                    if (!ip) return;
+                                    finalContent = ip;
+                                  } else if (cmd.command === 'web_setting' || (cmd.label || '').toLowerCase().includes('web setting')) {
+                                    const ip = window.prompt('Nhập IP máy photo muốn truy cập Web Image Monitor:');
+                                    if (!ip) return;
+                                    finalContent = ip;
+                                  }
+
+                                  handleTriggerUtilityExec(cmd.command, finalContent || '');
+                                }}
                                 disabled={utilityActionPending !== null}
                                 style={{
                                   display: 'flex',
