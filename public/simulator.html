@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Copier Web Settings Simulator</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #0a0b10;
+      --bg-card: #12131a;
+      --bg-input: #1a1c26;
+      --border-color: #262938;
+      --text-main: #f0f2f5;
+      --text-muted: #8b949e;
+      --accent-color: #3b82f6;
+      --accent-hover: #2563eb;
+      --success-color: #10b981;
+      --font-outfit: 'Outfit', sans-serif;
+      --font-inter: 'Inter', sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      font-family: var(--font-inter);
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+    }
+
+    /* Dashboard Sidebar */
+    .sidebar {
+      width: 320px;
+      background-color: var(--bg-card);
+      border-right: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      flex-shrink: 0;
+    }
+
+    .sidebar-header {
+      padding: 20px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .sidebar-title {
+      font-family: var(--font-outfit);
+      font-size: 1.25rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, #60a5fa, #3b82f6);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 4px;
+    }
+
+    .sidebar-subtitle {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .device-selector {
+      padding: 20px;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .section-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+
+    .device-card {
+      background-color: var(--bg-input);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 12px 16px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .device-card:hover {
+      border-color: var(--accent-color);
+      background-color: rgba(59, 130, 246, 0.05);
+    }
+
+    .device-card.active {
+      border-color: var(--accent-color);
+      background-color: rgba(59, 130, 246, 0.1);
+      box-shadow: 0 0 12px rgba(59, 130, 246, 0.15);
+    }
+
+    .device-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .device-name {
+      font-size: 0.875rem;
+      font-weight: 600;
+      text-transform: capitalize;
+    }
+
+    .device-ip {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-family: monospace;
+    }
+
+    .badge {
+      font-size: 0.65rem;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 4px;
+      text-transform: uppercase;
+    }
+
+    .badge-cached {
+      background-color: rgba(16, 185, 129, 0.15);
+      color: var(--success-color);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    /* Page Catalog */
+    .page-catalog {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .page-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .page-item {
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      background-color: transparent;
+      border: 1px solid transparent;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .page-item:hover {
+      background-color: var(--bg-input);
+      border-color: var(--border-color);
+    }
+
+    .page-item.active {
+      background-color: var(--bg-input);
+      border-color: var(--accent-color);
+    }
+
+    .page-title {
+      font-weight: 500;
+      color: var(--text-main);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .page-path {
+      color: var(--text-muted);
+      font-family: monospace;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Main Simulator Screen */
+    .simulator-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      background-color: var(--bg-dark);
+      padding: 20px;
+    }
+
+    /* Simulated Browser Chrome */
+    .browser-chrome {
+      background-color: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-bottom: none;
+      border-top-left-radius: 12px;
+      border-top-right-radius: 12px;
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+
+    .browser-buttons {
+      display: flex;
+      gap: 6px;
+    }
+
+    .browser-btn {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background-color: var(--border-color);
+    }
+
+    .browser-btn.red { background-color: #ef4444; }
+    .browser-btn.yellow { background-color: #f59e0b; }
+    .browser-btn.green { background-color: #10b981; }
+
+    .browser-nav-controls {
+      display: flex;
+      gap: 8px;
+    }
+
+    .nav-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 1rem;
+      padding: 4px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.2s;
+    }
+
+    .nav-btn:hover {
+      background-color: var(--bg-input);
+      color: var(--text-main);
+    }
+
+    .address-bar {
+      flex: 1;
+      background-color: var(--bg-input);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 6px 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .address-icon {
+      color: var(--text-muted);
+      font-size: 0.75rem;
+    }
+
+    .address-input {
+      color: var(--text-main);
+      font-family: monospace;
+      font-size: 0.8rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      user-select: all;
+    }
+
+    .simulation-badge {
+      background-color: rgba(59, 130, 246, 0.15);
+      color: var(--accent-color);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.65rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    /* Iframe Wrapper */
+    .viewport-wrapper {
+      flex: 1;
+      border: 1px solid var(--border-color);
+      border-bottom-left-radius: 12px;
+      border-bottom-right-radius: 12px;
+      background-color: #ffffff;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .simulator-iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+      background-color: #ffffff;
+    }
+
+    .no-data {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: var(--bg-card);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      color: var(--text-muted);
+      z-index: 10;
+    }
+
+    .no-data-title {
+      font-family: var(--font-outfit);
+      font-size: 1.25rem;
+      color: var(--text-main);
+      font-weight: 600;
+    }
+
+    .no-data-desc {
+      font-size: 0.875rem;
+      max-width: 300px;
+      text-align: center;
+    }
+
+    /* Stats Pane */
+    .stats-footer {
+      padding: 10px 20px;
+      border-top: 1px solid var(--border-color);
+      background-color: var(--bg-card);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .stat-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .stat-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background-color: var(--success-color);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <h1 class="sidebar-title">Gox Settings</h1>
+      <div class="sidebar-subtitle">Offline Web Cache Simulator</div>
+    </div>
+
+    <!-- Brand Selector -->
+    <div class="device-selector">
+      <div class="section-label">Target Devices</div>
+      <div class="device-card active" id="card-ricoh" onclick="selectBrand('ricoh')">
+        <div class="device-info">
+          <span class="device-name">Ricoh Copier</span>
+          <span class="device-ip">192.168.1.250</span>
+        </div>
+        <span class="badge badge-cached">Cached</span>
+      </div>
+      <div class="device-card" id="card-toshiba" onclick="selectBrand('toshiba')">
+        <div class="device-info">
+          <span class="device-name">Toshiba Copier</span>
+          <span class="device-ip">192.168.1.155</span>
+        </div>
+        <span class="badge badge-cached">Cached</span>
+      </div>
+    </div>
+
+    <!-- Page Catalog -->
+    <div class="page-catalog">
+      <div class="section-label">Cached Pages (<span id="pages-count">0</span>)</div>
+      <ul class="page-list" id="page-list-container">
+        <!-- Dynamically populated -->
+      </ul>
+    </div>
+
+    <div class="stats-footer">
+      <div class="stat-item">
+        <span class="stat-dot"></span>
+        <span>Status: Simulation Mode</span>
+      </div>
+      <span id="cache-size">0 KB</span>
+    </div>
+  </div>
+
+  <!-- Main Viewport -->
+  <div class="simulator-container">
+    <!-- Browser Controls -->
+    <div class="browser-chrome">
+      <div class="browser-buttons">
+        <div class="browser-btn red"></div>
+        <div class="browser-btn yellow"></div>
+        <div class="browser-btn green"></div>
+      </div>
+      
+      <div class="browser-nav-controls">
+        <button class="nav-btn" onclick="goHome()" title="Home">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+        </button>
+        <button class="nav-btn" onclick="refreshSim()" title="Refresh">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path></svg>
+        </button>
+      </div>
+
+      <div class="address-bar">
+        <span class="address-icon">🔒</span>
+        <div class="address-input" id="address-url">http://192.168.1.250/</div>
+      </div>
+
+      <span class="simulation-badge">LOCAL OFFLINE CACHE</span>
+    </div>
+
+    <!-- Iframe Viewport -->
+    <div class="viewport-wrapper">
+      <div class="no-data" id="loading-overlay" style="display: flex;">
+        <div class="no-data-title">Loading Web Cache Database...</div>
+        <div class="no-data-desc">Fetching printer_web_cache_demo.json containing scraped layouts.</div>
+      </div>
+      <iframe class="simulator-iframe" id="simulator-iframe"></iframe>
+    </div>
+  </div>
+
+  <script>
+    let db = null;
+    let currentBrand = 'ricoh';
+    let currentPath = '/';
+    let activeBlobUrls = [];
+
+    // Helper to clear existing Blob URLs to prevent memory leaks
+    function clearActiveBlobs() {
+      activeBlobUrls.forEach(url => URL.revokeObjectURL(url));
+      activeBlobUrls = [];
+    }
+
+    // Load Web Cache JSON database
+    async function loadDatabase() {
+      try {
+        const response = await fetch('./printer_web_cache_demo.json');
+        if (!response.ok) throw new Error('File printer_web_cache_demo.json not found');
+        db = await response.json();
+        
+        document.getElementById('loading-overlay').style.display = 'none';
+        selectBrand('ricoh'); // Start with Ricoh
+      } catch (err) {
+        console.error(err);
+        document.getElementById('loading-overlay').innerHTML = `
+          <div class="no-data-title" style="color: #ef4444;">Error Loading Database</div>
+          <div class="no-data-desc">Make sure you have run the deep crawler script to generate the JSON file.</div>
+        `;
+      }
+    }
+
+    // Toggle between brands
+    function selectBrand(brand) {
+      currentBrand = brand;
+      
+      // Update UI cards
+      document.getElementById('card-ricoh').classList.toggle('active', brand === 'ricoh');
+      document.getElementById('card-toshiba').classList.toggle('active', brand === 'toshiba');
+
+      if (!db || !db[brand]) return;
+
+      const brandData = db[brand];
+      const pages = brandData.pages || {};
+      
+      // Update list count
+      document.getElementById('pages-count').innerText = Object.keys(pages).length;
+      
+      // Calculate database size
+      const sizeStr = JSON.stringify(brandData).length;
+      document.getElementById('cache-size').innerText = `${Math.round(sizeStr / 1024)} KB`;
+
+      // Rebuild list catalog
+      const listContainer = document.getElementById('page-list-container');
+      listContainer.innerHTML = '';
+      
+      Object.keys(pages).forEach(path => {
+        const info = pages[path];
+        if (info.error) return; // skip error pages in catalog
+        
+        const li = document.createElement('li');
+        li.className = 'page-item';
+        li.id = `item-${brand}-${path.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        li.onclick = () => navigateToPath(path);
+        
+        li.innerHTML = `
+          <div class="page-title">${info.title || 'Untitled'}</div>
+          <div class="page-path">${path}</div>
+        `;
+        listContainer.appendChild(li);
+      });
+
+      // Default redirect / start page
+      // Ricoh starts at the mainframe if logged in
+      const defaultPath = brand === 'ricoh' && pages['/web/entry/en/websys/webArch/mainFrame.cgi'] 
+        ? '/web/entry/en/websys/webArch/mainFrame.cgi' 
+        : '/';
+        
+      navigateToPath(defaultPath);
+    }
+
+    // Find frame elements by name in nested framesets
+    function findFrameWindowByName(parentWin, name) {
+      if (parentWin.name === name) return parentWin;
+      for (let i = 0; i < parentWin.frames.length; i++) {
+        const found = findFrameWindowByName(parentWin.frames[i], name);
+        if (found) return found;
+      }
+      return null;
+    }
+
+    // Resolve relative paths inside the simulated network
+    function resolveRelativePath(relative, current) {
+      if (relative.startsWith('http://') || relative.startsWith('https://') || relative.startsWith('data:')) {
+        try {
+          const parsed = new URL(relative);
+          // Return path + query
+          return parsed.pathname + parsed.search;
+        } catch {
+          return relative;
+        }
+      }
+      
+      if (relative.startsWith('/')) {
+        return relative;
+      }
+      
+      // Remove query string first for resolving directory
+      const baseClean = current.split('?')[0];
+      const parts = baseClean.split('/');
+      parts.pop(); // remove filename
+      const baseDir = parts.join('/');
+      
+      const resolved = baseDir + '/' + relative;
+      // Resolve path navigation symbols like "../" or "./"
+      const urlObj = new URL(resolved, 'http://localhost');
+      return urlObj.pathname + urlObj.search;
+    }
+
+    // Main navigation function
+    function navigateToPath(path, targetFrame = '_self') {
+      if (!db || !db[currentBrand]) return;
+      
+      const brandData = db[currentBrand];
+      const pages = brandData.pages || {};
+      
+      // Try to find the page in the cache
+      // If it doesn't match exactly, try finding matching keys (e.g. without domain)
+      let resolvedPath = path;
+      if (path.startsWith('http')) {
+        try {
+          const parsed = new URL(path);
+          resolvedPath = parsed.pathname + parsed.search;
+        } catch {}
+      }
+
+      // Check if page exists in cache
+      let pageData = pages[resolvedPath];
+      if (!pageData) {
+        // Try fallback without query parameters
+        const cleanPath = resolvedPath.split('?')[0];
+        pageData = pages[cleanPath];
+        if (pageData) {
+          resolvedPath = cleanPath;
+        }
+      }
+
+      if (!pageData) {
+        console.warn(`Path ${path} not found in offline cache database.`);
+        return;
+      }
+
+      currentPath = resolvedPath;
+      
+      // Update catalog active state
+      document.querySelectorAll('.page-item').forEach(item => item.classList.remove('active'));
+      const activeItem = document.getElementById(`item-${currentBrand}-${resolvedPath.replace(/[^a-zA-Z0-9]/g, '_')}`);
+      if (activeItem) activeItem.classList.add('active');
+
+      // Update address bar
+      document.getElementById('address-url').innerText = `http://${brandData.ip}${resolvedPath}`;
+
+      // Load content
+      const iframe = document.getElementById('simulator-iframe');
+
+      // Generate the simulation HTML
+      const simulationHtml = prepareHtmlForSimulation(pageData.html, resolvedPath);
+      const blob = new Blob([simulationHtml], { type: 'text/html;charset=utf-8' });
+      const blobUrl = URL.createObjectURL(blob);
+      activeBlobUrls.push(blobUrl);
+
+      if (targetFrame === '_self' || targetFrame === '_top' || targetFrame === '_parent' || targetFrame === iframe.name) {
+        iframe.src = blobUrl;
+      } else {
+        // Target is a subframe inside the iframe
+        try {
+          const targetWin = findFrameWindowByName(iframe.contentWindow, targetFrame);
+          if (targetWin) {
+            targetWin.location.href = blobUrl;
+          } else {
+            // fallback load in main if frame not found
+            iframe.src = blobUrl;
+          }
+        } catch (e) {
+          console.error("Frame navigation error: ", e);
+          iframe.src = blobUrl;
+        }
+      }
+    }
+
+    // Rewrite HTML content and inject simulator hooks
+    function prepareHtmlForSimulation(html, path) {
+      if (!html) return '<html><body>Empty Page</body></html>';
+      const ip = db[currentBrand].ip;
+      const baseUrl = `http://${ip}`;
+      
+      function resolvePath(rel, base) {
+        if (rel.startsWith('http://') || rel.startsWith('https://') || rel.startsWith('data:')) {
+          return rel;
+        }
+        if (rel.startsWith('/')) {
+          return baseUrl + rel;
+        }
+        const baseClean = base.split('?')[0];
+        const parts = baseClean.split('/');
+        parts.pop(); 
+        const baseDir = parts.join('/');
+        return baseUrl + (baseDir.endsWith('/') ? baseDir : baseDir + '/') + rel;
+      }
+      
+      // Rewrite Stylesheets, Scripts, and Images to load directly from the physical printer IP
+      let processed = html.replace(/<link\s+([^>]*?)href=["\']([^"\']+)["\']/gi, (match, attrs, href) => {
+        if (!href.startsWith('http') && !href.startsWith('data:') && !href.startsWith('#')) {
+          const abs = resolvePath(href, path);
+          return `<link ${attrs}href="${abs}"`;
+        }
+        return match;
+      });
+      
+      processed = processed.replace(/<script\s+([^>]*?)src=["\']([^"\']+)["\']/gi, (match, attrs, src) => {
+        if (!src.startsWith('http') && !src.startsWith('data:') && !src.startsWith('#')) {
+          const abs = resolvePath(src, path);
+          return `<script ${attrs}src="${abs}"`;
+        }
+        return match;
+      });
+      
+      processed = processed.replace(/<img\s+([^>]*?)src=["\']([^"\']+)["\']/gi, (match, attrs, src) => {
+        if (!src.startsWith('http') && !src.startsWith('data:') && !src.startsWith('#')) {
+          const abs = resolvePath(src, path);
+          return `<img ${attrs}src="${abs}"`;
+        }
+        return match;
+      });
+
+      // Special frame rewrite:
+      const brandData = db[currentBrand];
+      const pages = brandData.pages || {};
+      
+      processed = processed.replace(/<(frame|iframe)\s+([^>]*?)src=["\']([^"\']+)["\']/gi, (match, tag, attrs, src) => {
+        if (!src.startsWith('http') && !src.startsWith('data:') && !src.startsWith('#') && !src.startsWith('javascript:')) {
+          const resolvedSrcPath = resolveRelativePath(src, path);
+          const childPage = pages[resolvedSrcPath];
+          if (childPage) {
+            const childHtml = prepareHtmlForSimulation(childPage.html, resolvedSrcPath);
+            const childBlob = new Blob([childHtml], { type: 'text/html;charset=utf-8' });
+            const childBlobUrl = URL.createObjectURL(childBlob);
+            activeBlobUrls.push(childBlobUrl);
+            return `<${tag} ${attrs}src="${childBlobUrl}"`;
+          }
+        }
+        return match;
+      });
+
+      // Inject navigation & submit interception script
+      const scriptInjection = `
+      <script>
+      (function() {
+        // Intercept clicks on links
+        document.addEventListener('click', function(e) {
+          var anchor = e.target.closest('a');
+          if (anchor) {
+            var href = anchor.getAttribute('href');
+            if (href && !href.startsWith('javascript:') && !href.startsWith('#')) {
+              if (href.startsWith('http') && !href.includes('${ip}')) {
+                return; // external links escape simulator
+              }
+              e.preventDefault();
+              window.parent.postMessage({
+                type: 'navigate',
+                href: href,
+                currentPath: ${JSON.stringify(path)},
+                targetFrame: anchor.getAttribute('target') || window.name || '_self'
+              }, '*');
+            }
+          }
+        }, true);
+        
+        // Intercept forms
+        document.addEventListener('submit', function(e) {
+          var form = e.target;
+          var action = form.getAttribute('action') || '';
+          e.preventDefault();
+          window.parent.postMessage({
+            type: 'submit',
+            action: action,
+            currentPath: ${JSON.stringify(path)},
+            targetFrame: form.getAttribute('target') || window.name || '_self'
+          }, '*');
+        }, true);
+      })();
+      </script>
+      `;
+
+      if (processed.includes('</body>')) {
+        processed = processed.replace('</body>', `${scriptInjection}</body>`);
+      } else {
+        processed += scriptInjection;
+      }
+
+      return processed;
+    }
+
+    // Message receiver from inner frames
+    window.addEventListener('message', function(event) {
+      const msg = event.data;
+      if (!msg || typeof msg !== 'object') return;
+      
+      if (msg.type === 'navigate') {
+        const resolvedPath = resolveRelativePath(msg.href, msg.currentPath);
+        navigateToPath(resolvedPath, msg.targetFrame);
+      } else if (msg.type === 'submit') {
+        const resolvedPath = resolveRelativePath(msg.action, msg.currentPath);
+        navigateToPath(resolvedPath, msg.targetFrame);
+      }
+    });
+
+    // Browser chrome controls
+    function goHome() {
+      selectBrand(currentBrand);
+    }
+
+    function refreshSim() {
+      navigateToPath(currentPath);
+    }
+
+    // Initialize
+    loadDatabase();
+  </script>
+</body>
+</html>

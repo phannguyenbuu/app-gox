@@ -2,12 +2,25 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { useAuthStore } from '../authStore';
 
 vi.mock('../../api/mockApi', () => ({
-  apiProfileByEmail: vi.fn(),
-  mockChangePassword: vi.fn(),
+  mockLogin: vi.fn(),
+  mockRegister: vi.fn(),
+  mockLoginWithGoogle: vi.fn(),
 }));
 
-import { apiProfileByEmail } from '../../api/mockApi';
-const apiProfileByEmailFn = vi.mocked(apiProfileByEmail);
+import { mockLogin } from '../../api/mockApi';
+const mockLoginFn = vi.mocked(mockLogin);
+
+const fakeUser = {
+  id: 'user-s1',
+  username: 'supplier1',
+  email: 'supplier1@goxprint.vn',
+  fullName: 'Nguyễn Văn An',
+  role: 'supplier' as const,
+  locationIds: ['loc-1', 'loc-2'],
+  companyId: 'CTY001',
+  companyName: 'Test Company',
+  workspaceIds: ['ws-1'],
+};
 
 function createLocalStorageMock() {
   const store: Record<string, string> = {};
@@ -43,110 +56,54 @@ describe('authStore', () => {
 
   describe('login', () => {
     it('sets user, token, and isAuthenticated on successful login', async () => {
-      apiProfileByEmailFn.mockResolvedValue({
-        success: true,
-        message: 'Tìm thấy email trong hệ thống',
-        profile: {
-          id: 123,
-          name: 'Nguyễn Văn An',
-          email: 'supplier1@goxprint.vn',
-          role: 'supplier',
-          phone: '0901-111-222',
-          workspace_name: 'Công ty TNHH Gox Print',
-          company_tax_id: 'CTY001',
-          created_at: '2026-01-01T08:00:00.000000Z',
-        },
-      });
-      const result = await useAuthStore.getState().login('supplier1@goxprint.vn');
+      mockLoginFn.mockResolvedValue({ success: true, user: fakeUser });
+      const result = await useAuthStore.getState().login('supplier1@goxprint.vn', 'password123');
       expect(result.success).toBe(true);
       const state = useAuthStore.getState();
-      expect(state.user?.email).toBe('supplier1@goxprint.vn');
-      expect(state.user?.fullName).toBe('Nguyễn Văn An');
-      expect(state.user?.role).toBe('supplier');
+      expect(state.user).toEqual(fakeUser);
       expect(state.token).toBeTruthy();
       expect(state.isAuthenticated).toBe(true);
     });
 
     it('saves session to localStorage on successful login', async () => {
-      apiProfileByEmailFn.mockResolvedValue({
-        success: true,
-        message: 'Tìm thấy email trong hệ thống',
-        profile: {
-          id: 123,
-          name: 'Nguyễn Văn An',
-          email: 'supplier1@goxprint.vn',
-          role: 'supplier',
-          workspace_name: 'Công ty TNHH Gox Print',
-          created_at: '2026-01-01T08:00:00.000000Z',
-        },
-      });
-      await useAuthStore.getState().login('supplier1@goxprint.vn');
+      mockLoginFn.mockResolvedValue({ success: true, user: fakeUser });
+      await useAuthStore.getState().login('supplier1@goxprint.vn', 'password123');
       expect(storageMock.setItem).toHaveBeenCalledWith('auth_session', expect.any(String));
       const saved = JSON.parse(storageMock.setItem.mock.calls[0][1]);
-      expect(saved.user.email).toBe('supplier1@goxprint.vn');
+      expect(saved.user).toEqual(fakeUser);
       expect(saved.token).toBeTruthy();
       expect(saved.expiresAt).toBeGreaterThan(Date.now());
     });
 
     it('does not change state on failed login', async () => {
-      apiProfileByEmailFn.mockResolvedValue({
-        success: false,
-        message: 'Email không tồn tại trong hệ thống',
-        profile: null,
-      });
-      const result = await useAuthStore.getState().login('wrong@test.com');
+      mockLoginFn.mockResolvedValue({ success: false, error: 'Email hoặc mật khẩu không đúng' });
+      const result = await useAuthStore.getState().login('wrong@test.com', 'wrong');
       expect(result.success).toBe(false);
-      if (!result.success) expect(result.error).toBe('Email không tồn tại trong hệ thống');
+      if (!result.success) expect(result.error).toBe('Email hoặc mật khẩu không đúng');
       const state = useAuthStore.getState();
       expect(state.user).toBeNull();
       expect(state.isAuthenticated).toBe(false);
     });
 
     it('does not save to localStorage on failed login', async () => {
-      apiProfileByEmailFn.mockResolvedValue({
-        success: false,
-        message: 'Email không tồn tại trong hệ thống',
-        profile: null,
-      });
-      await useAuthStore.getState().login('wrong@test.com');
+      mockLoginFn.mockResolvedValue({ success: false, error: 'Invalid' });
+      await useAuthStore.getState().login('wrong@test.com', 'wrong');
       expect(storageMock.setItem).not.toHaveBeenCalled();
     });
 
     it('generates a base64 token containing user id', async () => {
-      apiProfileByEmailFn.mockResolvedValue({
-        success: true,
-        message: 'Tìm thấy email trong hệ thống',
-        profile: {
-          id: 123,
-          name: 'Nguyễn Văn An',
-          email: 'supplier1@goxprint.vn',
-          role: 'supplier',
-          workspace_name: 'Công ty TNHH Gox Print',
-          created_at: '2026-01-01T08:00:00.000000Z',
-        },
-      });
-      await useAuthStore.getState().login('supplier1@goxprint.vn');
+      mockLoginFn.mockResolvedValue({ success: true, user: fakeUser });
+      await useAuthStore.getState().login('supplier1@goxprint.vn', 'password123');
       const token = useAuthStore.getState().token!;
       const decoded = atob(token);
-      expect(decoded).toContain('123');
+      expect(decoded).toContain(fakeUser.id);
     });
   });
 
   describe('logout', () => {
     it('clears user, token, and isAuthenticated', async () => {
-      apiProfileByEmailFn.mockResolvedValue({
-        success: true,
-        message: 'Tìm thấy email trong hệ thống',
-        profile: {
-          id: 123,
-          name: 'Nguyễn Văn An',
-          email: 'supplier1@goxprint.vn',
-          role: 'supplier',
-          workspace_name: 'Công ty TNHH Gox Print',
-          created_at: '2026-01-01T08:00:00.000000Z',
-        },
-      });
-      await useAuthStore.getState().login('supplier1@goxprint.vn');
+      mockLoginFn.mockResolvedValue({ success: true, user: fakeUser });
+      await useAuthStore.getState().login('supplier1@goxprint.vn', 'password123');
       useAuthStore.getState().logout();
       const state = useAuthStore.getState();
       expect(state.user).toBeNull();
@@ -155,19 +112,8 @@ describe('authStore', () => {
     });
 
     it('removes session from localStorage', async () => {
-      apiProfileByEmailFn.mockResolvedValue({
-        success: true,
-        message: 'Tìm thấy email trong hệ thống',
-        profile: {
-          id: 123,
-          name: 'Nguyễn Văn An',
-          email: 'supplier1@goxprint.vn',
-          role: 'supplier',
-          workspace_name: 'Công ty TNHH Gox Print',
-          created_at: '2026-01-01T08:00:00.000000Z',
-        },
-      });
-      await useAuthStore.getState().login('supplier1@goxprint.vn');
+      mockLoginFn.mockResolvedValue({ success: true, user: fakeUser });
+      await useAuthStore.getState().login('supplier1@goxprint.vn', 'password123');
       useAuthStore.getState().logout();
       expect(storageMock.removeItem).toHaveBeenCalledWith('auth_session');
     });
@@ -175,41 +121,17 @@ describe('authStore', () => {
 
   describe('checkSession', () => {
     it('restores state from valid localStorage session', () => {
-      const session = {
-        token: 'valid-token',
-        user: {
-          id: '123',
-          username: 'Nguyễn Văn An',
-          email: 'supplier1@goxprint.vn',
-          fullName: 'Nguyễn Văn An',
-          role: 'supplier' as const,
-          locationIds: [],
-          workspaceIds: [],
-        },
-        expiresAt: Date.now() + 60 * 60 * 1000,
-      };
+      const session = { token: 'valid-token', user: fakeUser, expiresAt: Date.now() + 60 * 60 * 1000 };
       storageMock._store['auth_session'] = JSON.stringify(session);
       useAuthStore.getState().checkSession();
       const state = useAuthStore.getState();
-      expect(state.user?.email).toBe('supplier1@goxprint.vn');
+      expect(state.user).toEqual(fakeUser);
       expect(state.token).toBe('valid-token');
       expect(state.isAuthenticated).toBe(true);
     });
 
     it('clears state when session is expired', () => {
-      const session = {
-        token: 'expired-token',
-        user: {
-          id: '123',
-          username: 'Nguyễn Văn An',
-          email: 'supplier1@goxprint.vn',
-          fullName: 'Nguyễn Văn An',
-          role: 'supplier' as const,
-          locationIds: [],
-          workspaceIds: [],
-        },
-        expiresAt: Date.now() - 1000,
-      };
+      const session = { token: 'expired-token', user: fakeUser, expiresAt: Date.now() - 1000 };
       storageMock._store['auth_session'] = JSON.stringify(session);
       useAuthStore.getState().checkSession();
       const state = useAuthStore.getState();
@@ -232,20 +154,9 @@ describe('authStore', () => {
     });
 
     it('session expiry is set to 24 hours from login time', async () => {
-      apiProfileByEmailFn.mockResolvedValue({
-        success: true,
-        message: 'Tìm thấy email trong hệ thống',
-        profile: {
-          id: 123,
-          name: 'Nguyễn Văn An',
-          email: 'supplier1@goxprint.vn',
-          role: 'supplier',
-          workspace_name: 'Công ty TNHH Gox Print',
-          created_at: '2026-01-01T08:00:00.000000Z',
-        },
-      });
+      mockLoginFn.mockResolvedValue({ success: true, user: fakeUser });
       const now = Date.now();
-      await useAuthStore.getState().login('supplier1@goxprint.vn');
+      await useAuthStore.getState().login('supplier1@goxprint.vn', 'password123');
       const saved = JSON.parse(storageMock.setItem.mock.calls[0][1]);
       const expectedExpiry = now + 24 * 60 * 60 * 1000;
       expect(saved.expiresAt).toBeGreaterThanOrEqual(expectedExpiry - 1000);

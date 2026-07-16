@@ -11,12 +11,6 @@ export function calculateStatusStats(
   requests: RepairRequest[],
   userLocationIds?: string[]
 ): Record<RepairStatus, number> {
-  if (userLocationIds && userLocationIds.length === 0) {
-    return Object.fromEntries(
-      ALL_STATUSES.map((s) => [s, 0])
-    ) as Record<RepairStatus, number>;
-  }
-
   const filterByLoc = userLocationIds && userLocationIds.length > 0;
   const locationSet = new Set(userLocationIds || []);
 

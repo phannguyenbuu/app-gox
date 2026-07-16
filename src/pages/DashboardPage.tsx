@@ -48,7 +48,7 @@ export function DashboardPage() {
   );
 
   const statusStats = useMemo(
-    () => calculateStatusStats(requests, userLocationIds.length > 0 ? userLocationIds : undefined),
+    () => calculateStatusStats(requests, userLocationIds),
     [requests, userLocationIds],
   );
 

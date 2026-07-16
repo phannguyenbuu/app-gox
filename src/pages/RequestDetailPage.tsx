@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import { useRepairStore } from '../stores/repairStore';
 import { useAuthStore } from '../stores/authStore';
 import { useMaterialStore } from '../stores/materialStore';
-import { apiIncidentAddMaterial, mockGetRequestById, mockGetUserName, mockGetUserPhone } from '../api/mockApi';
+import { mockGetRequestById, mockGetUserName, mockGetUserPhone } from '../api/mockApi';
 import { useLocationStore } from '../stores/locationStore';
 import { PriorityBadge } from '../components/requests/PriorityBadge';
 import { StatusBadge } from '../components/requests/StatusBadge';
@@ -61,7 +61,7 @@ export function RequestDetailPage() {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const { requests, updateStatus, addProgressNote, completeRequest } = useRepairStore();
-  const { materials, setMaterials, addMaterial, updateMaterial, removeMaterial } = useMaterialStore();
+  const { materials, totalCost, setMaterials, addMaterial, updateMaterial, removeMaterial } = useMaterialStore();
   const { locations, fetchLocations } = useLocationStore();
 
   const [request, setRequest] = useState<RepairRequest | null>(null);
@@ -86,15 +86,6 @@ export function RequestDetailPage() {
   const [reportLaborCost, setReportLaborCost] = useState('');
   const [reportError, setReportError] = useState('');
 
-  const displayMaterials = useMemo(() => {
-    if (materials.length > 0) return materials;
-    return request?.materials ?? [];
-  }, [materials, request]);
-
-  const displayMaterialTotalCost = useMemo(() => {
-    return displayMaterials.reduce((sum, m) => sum + m.quantity * m.unitPrice, 0);
-  }, [displayMaterials]);
-
   // Fetch request data
   useEffect(() => {
     fetchLocations();
@@ -102,7 +93,7 @@ export function RequestDetailPage() {
       if (!id) return;
       setLoading(true);
       try {
-        const data = await mockGetRequestById(id, user?.email);
+        const data = await mockGetRequestById(id);
         if (data) {
           setRequest(data);
           setMaterials(data.materials ?? []);
@@ -112,7 +103,7 @@ export function RequestDetailPage() {
       }
     }
     loadRequest();
-  }, [fetchLocations, id, setMaterials, user?.email]);
+  }, [id, setMaterials]);
 
   // Resolve location info
   const requestLocation = useMemo(() => {
@@ -131,7 +122,6 @@ export function RequestDetailPage() {
   }, [requests, id, setMaterials]);
 
   const canAccept = request?.status === 'new';
-  const canStartProcessing = request?.status === 'accepted' && user != null;
   const canAddProgress = (request?.status === 'accepted' || request?.status === 'in_progress');
   const canComplete = request?.status === 'in_progress';
   const canCancel = request?.status === 'new' && user?.role !== 'technician';
@@ -188,20 +178,6 @@ export function RequestDetailPage() {
     setActionLoading(false);
   }, [request, updateStatus]);
 
-  const handleStartProcessing = useCallback(async () => {
-    if (!request || !user) return;
-    setActionLoading(true);
-    setActionError('');
-    const result = await updateStatus(request.id, 'in_progress', {
-      note: 'Đang xử lý',
-      progressNote: 'Đang xử lý',
-      progressNoteCreatedBy: user.id,
-      assignedTo: request.assignedTo ?? user.id,
-    });
-    if (!result.success) setActionError(result.error ?? 'Lỗi khi chuyển sang đang xử lý');
-    setActionLoading(false);
-  }, [request, user, updateStatus]);
-
   const handleAddNote = useCallback(async () => {
     if (!request || !user) return;
     setNoteError('');
@@ -237,7 +213,7 @@ export function RequestDetailPage() {
     setNoteImages((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
-  const handleAddMaterial = useCallback(async () => {
+  const handleAddMaterial = useCallback(() => {
     setMaterialErrors([]);
     const qty = Number(materialQuantity);
     const price = Number(materialUnitPrice);
@@ -265,27 +241,6 @@ export function RequestDetailPage() {
       }
       setEditingMaterialId(null);
     } else {
-      if (user?.email) {
-        try {
-          setActionLoading(true);
-          await apiIncidentAddMaterial({
-            email: user.email,
-            task_id: String(request?.id ?? ''),
-            material_name: materialName.trim(),
-            quantity: qty,
-            unit: 'cái',
-            unit_price: price,
-            note: '',
-          });
-        } catch (e: any) {
-          setMaterialErrors([e?.message ?? 'Lỗi khi thêm vật tư']);
-          setActionLoading(false);
-          return;
-        } finally {
-          setActionLoading(false);
-        }
-      }
-
       const result = addMaterial({
         repairRequestId: request?.id ?? '',
         name: materialName.trim(),
@@ -301,7 +256,7 @@ export function RequestDetailPage() {
     setMaterialName('');
     setMaterialQuantity('');
     setMaterialUnitPrice('');
-  }, [materialName, materialQuantity, materialUnitPrice, editingMaterialId, request, addMaterial, updateMaterial, user?.email]);
+  }, [materialName, materialQuantity, materialUnitPrice, editingMaterialId, request, addMaterial, updateMaterial]);
 
   const handleEditMaterial = useCallback((mat: { id: string; name: string; quantity: number; unitPrice: number }) => {
     setEditingMaterialId(mat.id);
@@ -388,94 +343,28 @@ export function RequestDetailPage() {
           <span title={PRIORITY_LABELS[request.priority]}>
             <PriorityBadge priority={request.priority} />
           </span>
-          <span style={styles.metaText}>📍 {request.machineLocationName || requestLocation?.name || request.locationId}</span>
+          <span style={styles.metaText}>📍 {requestLocation ? requestLocation.name : request.locationId}</span>
           <span style={styles.metaText}>{formatDate(request.createdAt)}</span>
         </div>
-        {request.macAddress && (
-          <div style={{ marginTop: '6px' }}>
-            <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)', fontFamily: 'monospace' }}>
-              🖥️ MAC: {request.macAddress}
-            </span>
+        {/* Location details */}
+        {requestLocation && (
+          <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column' as const, gap: '3px' }}>
+            {requestLocation.address && (
+              <span style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>
+                🏠 {requestLocation.address}
+              </span>
+            )}
+            {requestLocation.phone && (
+              <span style={{ fontSize: '0.8rem' }}>
+                📞{' '}
+                <a href={`tel:${requestLocation.phone}`} style={{ color: 'var(--color-primary)', textDecoration: 'none', fontSize: '0.8rem' }}>
+                  {requestLocation.phone}
+                </a>
+              </span>
+            )}
           </div>
         )}
       </GlowCard>
-
-      {/* Thông tin khách hàng */}
-      {(request.customerName || request.customerPhone || request.customerEmail || request.customerAddress) && (
-        <GlowCard>
-          <h2 style={styles.sectionTitle}>👤 Thông tin khách hàng</h2>
-          <div style={{ display: 'flex', flexDirection: 'column' as const, gap: '8px' }}>
-            {request.customerName && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ fontSize: '1rem' }}>🏢</span>
-                <span style={{ fontSize: '0.9rem', color: 'var(--color-text)', fontWeight: 600 }}>{request.customerName}</span>
-              </div>
-            )}
-            {request.customerPhone && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ fontSize: '1rem' }}>📞</span>
-                <a href={`tel:${request.customerPhone}`} style={{ color: 'var(--color-primary)', textDecoration: 'none', fontSize: '0.88rem' }}>
-                  {request.customerPhone}
-                </a>
-              </div>
-            )}
-            {request.customerEmail && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ fontSize: '1rem' }}>✉️</span>
-                <a href={`mailto:${request.customerEmail}`} style={{ color: 'var(--color-primary)', textDecoration: 'none', fontSize: '0.88rem' }}>
-                  {request.customerEmail}
-                </a>
-              </div>
-            )}
-            {request.customerAddress && (
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
-                <span style={{ fontSize: '1rem' }}>🏠</span>
-                <span style={{ fontSize: '0.85rem', color: 'var(--color-text-secondary)', lineHeight: 1.4 }}>{request.customerAddress}</span>
-              </div>
-            )}
-          </div>
-        </GlowCard>
-      )}
-
-      {/* Thông tin máy từ quản lý MAC ID */}
-      {(request.machineLocationName || request.machineLocationAddress || request.machineContactEmails?.length || request.machineInCharge) && (
-        <GlowCard>
-          <h2 style={styles.sectionTitle}>🖨️ Thông tin máy</h2>
-          <div style={{ display: 'flex', flexDirection: 'column' as const, gap: '8px' }}>
-            {request.machineLocationName && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ fontSize: '1rem' }}>📍</span>
-                <span style={{ fontSize: '0.9rem', color: 'var(--color-text)', fontWeight: 600 }}>{request.machineLocationName}</span>
-              </div>
-            )}
-            {request.machineLocationAddress && (
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
-                <span style={{ fontSize: '1rem' }}>🏠</span>
-                <span style={{ fontSize: '0.85rem', color: 'var(--color-text-secondary)', lineHeight: 1.4 }}>{request.machineLocationAddress}</span>
-              </div>
-            )}
-            {request.machineInCharge && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ fontSize: '1rem' }}>👷</span>
-                <span style={{ fontSize: '0.88rem', color: 'var(--color-text)' }}>Phụ trách: <strong>{request.machineInCharge}</strong></span>
-              </div>
-            )}
-            {request.machineContactEmails && request.machineContactEmails.length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column' as const, gap: '4px' }}>
-                {request.machineContactEmails.map((email) => (
-                  <div key={email} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ fontSize: '1rem' }}>✉️</span>
-                    <a href={`mailto:${email}`} style={{ color: 'var(--color-primary)', textDecoration: 'none', fontSize: '0.85rem' }}>
-                      {email}
-                    </a>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </GlowCard>
-      )}
-
 
       {/* Assignee Info */}
       {request.assignedTo && (
@@ -602,16 +491,11 @@ export function RequestDetailPage() {
       </GlowCard>
 
       {/* 4. Action Buttons */}
-      {(canAccept || canCancel || canStartProcessing) && (
+      {(canAccept || canCancel) && (
         <div style={styles.actionRow}>
           {canAccept && (
             <AnimatedButton onClick={handleAccept} disabled={actionLoading}>
               Tiếp nhận yêu cầu
-            </AnimatedButton>
-          )}
-          {canStartProcessing && (
-            <AnimatedButton onClick={handleStartProcessing} disabled={actionLoading} variant="secondary">
-              Đang xử lý
             </AnimatedButton>
           )}
           {canCancel && (
@@ -726,12 +610,12 @@ export function RequestDetailPage() {
       {/* 6. Materials Section */}
       <GlowCard>
         <h2 style={styles.sectionTitle}>Vật tư thay thế</h2>
-        {displayMaterials.length === 0 ? (
+        {materials.length === 0 ? (
           <p style={styles.emptyText}>Chưa có vật tư nào.</p>
         ) : (
           <>
             <AnimatedList>
-              {displayMaterials.map((mat) => (
+              {materials.map((mat) => (
                 <div key={mat.id} style={styles.materialItem}>
                   <div style={styles.materialInfo}>
                     <span style={styles.materialName}>{mat.name}</span>
@@ -762,7 +646,7 @@ export function RequestDetailPage() {
             </AnimatedList>
             <div style={styles.totalCostRow}>
               <span style={styles.totalCostLabel}>Tổng chi phí vật tư:</span>
-              <span style={styles.totalCostValue}>{formatCurrency(displayMaterialTotalCost)}</span>
+              <span style={styles.totalCostValue}>{formatCurrency(totalCost)}</span>
             </div>
           </>
         )}

@@ -138,9 +138,6 @@ export interface LanSiteInfo {
   agents: any[];
   emails: any[];
   printers: any[];
-  label?: string;
-  agent_count?: number;
-  printer_count?: number;
 }
 
 export async function getLanSites(): Promise<LanSiteInfo[]> {
@@ -149,32 +146,6 @@ export async function getLanSites(): Promise<LanSiteInfo[]> {
     return res.rows || [];
   } catch (err) {
     console.error('Failed to fetch LAN sites:', err);
-    return [];
-  }
-}
-
-export async function getLanInfoByEmail(email: string): Promise<LanSiteInfo[]> {
-  try {
-    const PUBLIC_BASE_URL = import.meta.env.VITE_PUBLIC_API_URL || 'https://app.quanlymay.com';
-    const res = await fetch(`${PUBLIC_BASE_URL}/api/app-db/network/lan-info`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ email }),
-    });
-    const data = await res.json();
-    if (data.success && data.data && data.data.lans) {
-      return data.data.lans.map((lan: any) => ({
-        ...lan,
-        agents: lan.agents || [],
-        printers: lan.printers || [],
-        emails: lan.emails || []
-      }));
-    }
-    return [];
-  } catch (err) {
-    console.error('Failed to fetch LAN info by email:', err);
     return [];
   }
 }
@@ -261,11 +232,11 @@ export async function getCommandStatus(commandId: number): Promise<any> {
   return fetchApi(`/api/commands/${commandId}/status`);
 }
 
-export async function addEmailDestination(printerId: string, email: string, agentUid?: string): Promise<any> {
+export async function addEmailDestination(printerId: string, name: string, email: string, agentUid?: string): Promise<any> {
   const path = agentUid ? `/api/devices/${printerId}/add-email-dest?agent_uid=${agentUid}` : `/api/devices/${printerId}/add-email-dest`;
   return fetchApi(path, {
     method: 'POST',
-    body: JSON.stringify({ email })
+    body: JSON.stringify({ name, email })
   });
 }
 
@@ -311,6 +282,15 @@ export async function getAgentSettings(agentUid: string): Promise<any> {
   return fetchApi(`/api/agents/${agentUid}/settings?lead=default`);
 }
 
+export async function getJobs(lead?: string, lanUid?: string, agentUid?: string): Promise<any> {
+  const params = new URLSearchParams();
+  if (lead) params.append('lead', lead);
+  if (lanUid) params.append('lan_uid', lanUid);
+  if (agentUid) params.append('agent_uid', agentUid);
+  params.append('t', Date.now().toString());
+  return fetchApi(`/api/jobs?${params.toString()}`);
+}
+
 export async function updateAgentSettings(agentUid: string, settings: { scan_auto_open_file?: boolean; scan_auto_open_dir?: boolean }): Promise<any> {
   return fetchApi(`/api/agents/${agentUid}/settings?lead=default`, {
     method: 'POST',
@@ -326,13 +306,20 @@ export async function triggerAgentUtility(agentUid: string, action: string, payl
 }
 
 export async function getAgentUtilityCommands(agentUid: string): Promise<any> {
-  return fetchApi(`/api/agents/${agentUid}/utility-commands?lead=default`);
+  return fetchApi(`/api/agents/${agentUid}/utility-commands?lead=default&t=${Date.now()}`);
 }
 
 export async function triggerAgentUtilityExec(agentUid: string, command: string, commandContent: string): Promise<any> {
   return fetchApi(`/api/agents/${agentUid}/utility/exec?lead=default`, {
     method: 'POST',
     body: JSON.stringify({ command, command_content: commandContent }),
+  });
+}
+
+export async function triggerEmergencyRestart(agentUid: string): Promise<any> {
+  return fetchApi(`/api/agents/${agentUid}/emergency-restart?lead=default`, {
+    method: 'POST',
+    body: '{}',
   });
 }
 

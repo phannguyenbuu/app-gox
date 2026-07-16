@@ -76,7 +76,6 @@ export function transitionStatus(
         description: data.completionReport?.description ?? '',
         attachments: data.completionReport?.attachments ?? [],
         completedAt: now,
-        laborCost: data.completionReport?.laborCost,
       };
       updated = {
         ...updated,

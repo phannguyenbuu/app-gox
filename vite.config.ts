@@ -5,11 +5,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: '0.0.0.0',
-    allowedHosts: ['app.goxprint.com', 'remote.goxprint.com'],
-  },
-  build: {
-    outDir: 'dist',
-    emptyOutDir: true,
+    allowedHosts: ['app.goxprint.com'],
   },
   test: {
     globals: true,
