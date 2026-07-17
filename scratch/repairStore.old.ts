@@ -193,18 +193,6 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
       return { success: false, error: 'Không tìm thấy yêu cầu' };
     }
 
-    // Transition to in_progress (accepted→in_progress or in_progress→in_progress)
-    const targetStatus: RepairStatus = 'in_progress';
-    const transitionData = {
-      progressNote: note,
-      progressNoteCreatedBy: createdBy,
-    };
-
-    const result = transitionStatus(request, targetStatus, transitionData);
-    if (!result.success) {
-      return { success: false, error: result.error };
-    }
-
     set({ loading: true, error: null });
     try {
       const email = useAuthStore.getState().user?.email;
@@ -233,6 +221,7 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
           updatedAt: now,
         };
       } else {
+        const targetStatus: RepairStatus = 'in_progress';
         updated = await mockUpdateStatus(requestId, targetStatus, {
           progressNote: note,
           progressNoteImages: images,
@@ -247,7 +236,6 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
           : [updated, ...state.requests],
         loading: false,
       }));
-      notifyStatusChange(request.status, targetStatus);
       return { success: true };
     } catch (e: any) {
       set({ error: e.message ?? 'Lỗi khi thêm ghi chú', loading: false });
@@ -264,7 +252,9 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
       return { success: false, error: 'Không tìm thấy yêu cầu' };
     }
 
-    const result = transitionStatus(request, 'completed', { completionReport: report });
+    const result = transitionStatus(request, 'completed', {
+      completionReport: report,
+    });
     if (!result.success) {
       return { success: false, error: result.error };
     }

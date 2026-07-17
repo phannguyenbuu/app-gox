@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { User, LoginResult } from '../types/auth';
-import { mockRegister, mockLoginWithGoogle, mockChangePassword, apiProfileByEmail } from '../api/mockApi';
+import { apiProfileByEmail, mockChangePassword } from '../api/mockApi';
 import { useWorkspaceStore } from './workspaceStore';
 
 const AUTH_SESSION_KEY = 'auth_session';
@@ -16,9 +16,7 @@ interface AuthStore {
   user: User | null;
   token: string | null;
   isAuthenticated: boolean;
-  login: (email: string, password?: string) => Promise<LoginResult>;
-  register: (email: string, password: string, fullName: string, phoneNumber?: string, address?: string) => Promise<LoginResult>;
-  loginWithGoogle: (email: string) => Promise<LoginResult>;
+  login: (email: string) => Promise<LoginResult>;
   logout: () => void;
   checkSession: () => void;
   updateProfile: (data: { fullName?: string; phone?: string }) => void;
@@ -84,7 +82,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   token: null,
   isAuthenticated: false,
 
-  login: async (email: string, _password?: string): Promise<LoginResult> => {
+  login: async (email: string): Promise<LoginResult> => {
     const trimmed = email.trim();
     if (!trimmed) return { success: false, error: 'Vui lòng nhập email' };
 
@@ -102,26 +100,6 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     } catch (err: any) {
       return { success: false, error: err?.message || 'Đã xảy ra lỗi. Vui lòng thử lại.' };
     }
-  },
-
-  register: async (email: string, password: string, fullName: string, phoneNumber?: string, address?: string): Promise<LoginResult> => {
-    const result = await mockRegister(email, password, fullName, phoneNumber, address);
-    if (result.success) {
-      const token = generateToken(result.user.id);
-      saveSession(token, result.user);
-      set({ user: result.user, token, isAuthenticated: true });
-    }
-    return result;
-  },
-
-  loginWithGoogle: async (email: string): Promise<LoginResult> => {
-    const result = await mockLoginWithGoogle(email);
-    if (result.success) {
-      const token = generateToken(result.user.id);
-      saveSession(token, result.user);
-      set({ user: result.user, token, isAuthenticated: true });
-    }
-    return result;
   },
 
   logout: () => {
