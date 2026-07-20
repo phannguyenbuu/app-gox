@@ -181,11 +181,13 @@ export function AgentPage() {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   // Modals
-  const [activeModal, setActiveModal] = useState<'storage' | 'public_ftp' | 'private_ftp' | 'info_detail' | 'ftp_detail' | 'utilities' | 'edit_ip' | 'remote_lock' | 'toshiba_vnc' | null>(null);
+  const [activeModal, setActiveModal] = useState<'storage' | 'public_ftp' | 'private_ftp' | 'info_detail' | 'ftp_detail' | 'utilities' | 'edit_ip' | 'remote_lock' | 'toshiba_vnc' | 'ricoh_vnc' | null>(null);
   const [selectedUtilityAgent, setSelectedUtilityAgent] = useState<any | null>(null);
   const [ftpDetailData, setFtpDetailData] = useState<{ port: string | number; path: string; error?: string } | null>(null);
   const [remoteLockPrinter, setRemoteLockPrinter] = useState<{ ip: string; name: string; id: string | number; agentUid: string } | null>(null);
   const [toshibaVncData, setToshibaVncData] = useState<{ ip: string; printerName: string; agentUid: string } | null>(null);
+  const [ricohVncData, setRicohVncData] = useState<{ ip: string; printerName: string; agentUid: string } | null>(null);
+  const [ricohVncPort, setRicohVncPort] = useState<number>(5900);
   const [allocatedVncAddr, setAllocatedVncAddr] = useState<string>('');
   const [vncTunnelLoading, setVncTunnelLoading] = useState<boolean>(false);
   const [webPreviewModal, setWebPreviewModal] = useState<{ isOpen: boolean; title: string; html: string; ip: string; path: string; agentUid: string; url?: string } | null>(null);
@@ -193,6 +195,16 @@ export function AgentPage() {
   const [directLan, setDirectLan] = useState<boolean>(() => {
     return localStorage.getItem('goxprint_direct_lan') === 'true';
   });
+
+  const [myPublicIp, setMyPublicIp] = useState<string>('');
+  const [myLanUid, setMyLanUid] = useState<string | null>(null);
+  const [customRemoteIp, setCustomRemoteIp] = useState<string>(() => {
+    return localStorage.getItem('goxprint_custom_remote_ip') || '';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('goxprint_custom_remote_ip', customRemoteIp);
+  }, [customRemoteIp]);
 
   useEffect(() => {
     localStorage.setItem('goxprint_direct_lan', String(directLan));
@@ -364,8 +376,9 @@ export function AgentPage() {
     }
 
     if (directLan) {
-      // Direct LAN mode: Open directly in a new tab immediately
-      window.open(`http://${printerIp}:${printerPort}${targetPath || '/'}`, '_blank');
+      // Direct LAN mode
+      const targetHost = customRemoteIp.trim() || printerIp;
+      window.open(`http://${targetHost}:${printerPort}${targetPath || '/'}`, '_blank');
       return;
     }
 
@@ -958,8 +971,37 @@ export function AgentPage() {
       // Auto select first LAN if none selected or invalid
       const savedLanUid = localStorage.getItem('goxprint_selected_lan_uid');
       const isValidSaved = savedLanUid && data.some(site => site.lan_uid === savedLanUid);
+
+      // Fetch public IP check to recognize LAN
+      try {
+        const pubRes = await fetch(`${BASE_URL}/api/public/ip/public`);
+        const pubData = await pubRes.json();
+        if (pubData.ok && pubData.public_ip) {
+          setMyPublicIp(pubData.public_ip);
+        }
+      } catch (e) {
+        console.error('Failed to get public IP', e);
+      }
+
+      let detectedLanUid = null;
+      // Identify current LAN by probing each LAN
+      for (const site of data) {
+        try {
+          const workRes = await fetch(`${BASE_URL}/api/public/ip/workstation?lan_uid=${site.lan_uid}`);
+          const workData = await workRes.json();
+          if (workData.ok && workData.local_ip) {
+            detectedLanUid = site.lan_uid;
+            setMyLanUid(site.lan_uid);
+            break;
+          }
+        } catch (e) {}
+      }
+
       if (data.length > 0) {
-        if (isValidSaved) {
+        if (detectedLanUid) {
+          setSelectedLanUid(detectedLanUid);
+          localStorage.setItem('goxprint_selected_lan_uid', detectedLanUid);
+        } else if (isValidSaved) {
           setSelectedLanUid(savedLanUid);
         } else {
           setSelectedLanUid(data[0].lan_uid);
@@ -2104,12 +2146,47 @@ except Exception as e:
     }
   };
 
+  // @ts-ignore
+  const handleStartRicohVnc = async (printerIp: string, printerName: string, agentUid: string, port: number = 5900) => {
+    setRicohVncData({ ip: printerIp, printerName: printerName, agentUid: agentUid });
+    setRicohVncPort(port);
+    setAllocatedVncAddr('');
+    setActiveModal('ricoh_vnc');
+
+    if (directLan) {
+      setAllocatedVncAddr(`${printerIp}:${port}`);
+      return;
+    }
+
+    setVncTunnelLoading(true);
+    try {
+      const response = await fetch(`${BASE_URL}/api/agents/${agentUid}/tunnel/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ printer_ip: printerIp, printer_port: port })
+      });
+      const data = await response.json();
+      if (data.ok && data.url_port) {
+        const cleanAddr = data.url_port.replace('http://', '').replace('https://', '');
+        setAllocatedVncAddr(cleanAddr);
+      } else {
+        showToast('Không thể mở đường hầm VNC: ' + (data.error || 'Lỗi không xác định'), 'error');
+        setActiveModal(null);
+      }
+    } catch (err: any) {
+      showToast('Lỗi kết nối VPS: ' + (err.message || err), 'error');
+      setActiveModal(null);
+    } finally {
+      setVncTunnelLoading(false);
+    }
+  };
+
   const handleQueryVideo = async (agentUid: string, cameraId: number, customTimestamp?: string, customDuration?: number) => {
     const ts = customTimestamp || queryTimestamp;
     const dur = customDuration || queryDuration;
     if (!ts) return;
 
-    const cameraName = cameras.find((c: any) => c.id === cameraId)?.name || '';
+    const cameraName = cameras.find((c: any) => c.id === cameraId)?.camera_name || '';
     const isDup = await isDuplicatePending(agentUid, 'trigger_utility', {
       action: 'query_camera_video',
       camera_name: cameraName,
@@ -2133,13 +2210,43 @@ except Exception as e:
       if (data.ok) {
         const cleanTs = ts.replace(/[- :]/g, '');
         const formattedTs = cleanTs.substring(0, 8) + '_' + cleanTs.substring(8, 14);
-        setQueriedVideoUrl(`clip_${selectedCamera.camera_name}_${formattedTs}.mp4`);
+        const expectedFileName = `clip_${cameraName}_${formattedTs}.mp4`;
+        
+        setActiveLoadingFile(expectedFileName);
+        
+        let attempts = 0;
+        const maxAttempts = 22; // ~66 seconds max wait
+        const pollInterval = setInterval(async () => {
+          attempts++;
+          try {
+            const filesRes = await fetch(`${BASE_URL}/api/agents/${agentUid}/cameras/${cameraId}/files`, { method: 'POST' });
+            const filesData = await filesRes.json();
+            if (filesData.ok && filesData.files) {
+              setCameraFiles(filesData.files);
+              const found = filesData.files.some((f: any) => f.name === expectedFileName);
+              if (found) {
+                clearInterval(pollInterval);
+                setQueriedVideoUrl(expectedFileName);
+                setQueryVideoLoading(false);
+                setActiveLoadingFile(null);
+                showToast('Đã lấy luồng video thành công!', 'success');
+              }
+            }
+          } catch (e) {}
+
+          if (attempts >= maxAttempts) {
+            clearInterval(pollInterval);
+            setQueryVideoLoading(false);
+            setActiveLoadingFile(null);
+            showToast('Quá thời gian chờ tải video từ Agent.', 'error');
+          }
+        }, 3000);
       } else {
         showToast('Không truy xuất được video: ' + data.error, 'error');
+        setQueryVideoLoading(false);
       }
     } catch (err: any) {
-      showToast('Lỗi kết nối render: ' + err.message, 'error');
-    } finally {
+      showToast('Lỗi kết nối server: ' + err.message, 'error');
       setQueryVideoLoading(false);
     }
   };
@@ -2558,22 +2665,29 @@ except Exception as e:
 
         {/* LAN Select filter */}
         <div style={styles.filterBar}>
-          <label style={styles.filterLabel}>Mạng LAN hiện tại:</label>
-          {lanSitesLoading && lanSites.length === 0 ? (
-            <LoadingSpinner size="sm" />
-          ) : (
-            <select
-              value={selectedLanUid}
-              onChange={(e) => setSelectedLanUid(e.target.value)}
-              style={styles.lanSelect}
-            >
-              {lanSites.map((site) => (
-                <option key={site.lan_uid} value={site.lan_uid}>
-                  {site.lan_name || site.lan_uid} ({site.active_agents} Agent - {site.printers?.length ?? 0} máy Photo)
-                </option>
-              ))}
-            </select>
-          )}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1 }}>
+            <label style={styles.filterLabel}>Mạng LAN hiện tại:</label>
+            {lanSitesLoading && lanSites.length === 0 ? (
+              <LoadingSpinner size="sm" />
+            ) : (
+              <select
+                value={selectedLanUid}
+                onChange={(e) => setSelectedLanUid(e.target.value)}
+                style={styles.lanSelect}
+              >
+                {lanSites.map((site) => (
+                  <option key={site.lan_uid} value={site.lan_uid}>
+                    {site.lan_name || site.lan_uid} ({site.active_agents} Agent - {site.printers?.length ?? 0} máy Photo) {myLanUid === site.lan_uid ? '📍 (Đang ở LAN này)' : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+            {myPublicIp && (
+              <div style={{ fontSize: '0.75rem', color: 'var(--color-success)', marginTop: '4px' }}>
+                📍 Public IP của bạn: <strong>{myPublicIp}</strong> {myLanUid ? `(Đã nhận diện: ${lanSites.find(l => l.lan_uid === myLanUid)?.lan_name || myLanUid})` : '(Không thuộc LAN nào quản lý)'}
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Tab bar switch */}
@@ -3178,16 +3292,17 @@ except Exception as e:
                               🔒 Khóa máy từ xa
                             </button>
 
-                            {detectBrand(p.name || p.printer_name || p.ip) === 'ricoh' && (p.name || p.printer_name || '').toLowerCase().includes('6503') && (
+                            {/* Tạm thời ẩn Remote Panel theo yêu cầu
+                            {detectBrand(p.name || p.printer_name || p.ip) === 'ricoh' && (
                               <button
-                                style={{ ...styles.smallBtn, flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '8px 12px', display: 'flex', alignItems: 'center', borderColor: '#34d399', color: '#34d399', opacity: 0.5, cursor: 'not-allowed' }}
-                                onClick={() => showToast('Tính năng này đang được khóa', 'info')}
-                                disabled={true}
-                                title="Tính năng đang khóa"
+                                style={{ ...styles.smallBtn, flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '8px 12px', display: 'flex', alignItems: 'center', borderColor: '#34d399', color: '#34d399' }}
+                                onClick={() => handleStartRicohVnc(p.ip, p.name || p.printer_name || p.ip, selectedAgentUid, ricohVncPort)}
+                                disabled={onlineAgents.length === 0}
                               >
-                                🔒 Remote Panel
+                                📺 Remote Panel
                               </button>
                             )}
+                            */}
 
                             {detectBrand(p.name || p.printer_name || p.ip) === 'toshiba' && (
                               <button
@@ -5340,6 +5455,95 @@ raise RuntimeError('\\n'.join(lines))`;
                   </div>
                 </>
               )}
+
+              {activeModal === 'ricoh_vnc' && ricohVncData && (
+                <>
+                  <div style={styles.modalHeader}>
+                    <h3 style={styles.modalTitle}>📺 Kết nối Remote Panel - {ricohVncData.printerName}</h3>
+                    <button style={styles.modalCloseBtn} onClick={() => setActiveModal(null)}>
+                      &times;
+                    </button>
+                  </div>
+                  <div style={styles.modalBody}>
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', alignItems: 'center' }}>
+                      <label style={{ fontSize: '0.8rem', color: 'var(--color-text)', fontWeight: 600 }}>Cổng VNC:</label>
+                      <input 
+                        type="number" 
+                        value={ricohVncPort}
+                        onChange={(e) => setRicohVncPort(parseInt(e.target.value) || 5900)}
+                        style={{ padding: '6px', borderRadius: '4px', border: '1px solid var(--color-surface-light)', background: 'rgba(0,0,0,0.2)', color: 'white', width: '80px', fontSize: '0.8rem' }}
+                      />
+                      <button 
+                        onClick={() => handleStartRicohVnc(ricohVncData.ip, ricohVncData.printerName, ricohVncData.agentUid, ricohVncPort)}
+                        style={{ padding: '6px 12px', borderRadius: '4px', background: 'var(--color-primary)', border: 'none', color: 'white', cursor: 'pointer', fontSize: '0.8rem' }}
+                      >
+                        🔄 Áp dụng
+                      </button>
+                    </div>
+
+                    {vncTunnelLoading ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '24px 0', gap: '16px' }}>
+                        <div style={{
+                          border: '4px solid rgba(255,255,255,0.1)',
+                          width: '36px', height: '36px', borderRadius: '50%', borderLeftColor: '#10b981', animation: 'spin 1s linear infinite'
+                        }}></div>
+                        <div style={{ fontSize: '0.9rem', color: 'var(--color-text-secondary)' }}>
+                          Đang khởi tạo đường hầm VNC bảo mật qua Agent...
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                        <div style={{ border: '1px solid var(--color-surface-light)', borderRadius: '8px', padding: '14px', background: 'rgba(0,0,0,0.2)' }}>
+                          {directLan ? (
+                            <div style={{ textAlign: 'center', padding: '20px 10px' }}>
+                              <p style={{ color: '#34d399', fontWeight: 600, fontSize: '0.85rem', marginBottom: '14px' }}>
+                                🟢 Đang bật Direct LAN (kết nối nội mạng). Bạn có thể mở ứng dụng VNC Client (RealVNC, TigerVNC, v.v.) và kết nối đến:
+                              </p>
+                              <div style={{ background: 'rgba(0,0,0,0.5)', padding: '10px', borderRadius: '6px', fontFamily: 'monospace', fontSize: '1.2rem', color: 'white', marginBottom: '14px' }}>
+                                {ricohVncData.ip}:{ricohVncPort}
+                              </div>
+                              <button
+                                onClick={() => {
+                                  setActiveModal(null);
+                                  window.open(`vnc://${ricohVncData.ip}:${ricohVncPort}`, '_self');
+                                }}
+                                style={{
+                                  background: '#10b981', border: 'none', borderRadius: '6px', padding: '10px 20px', color: 'white', fontSize: '0.85rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)'
+                                }}
+                              >
+                                🌐 Mở bằng VNC Client
+                              </button>
+                            </div>
+                          ) : allocatedVncAddr ? (
+                            <div style={{ textAlign: 'center', padding: '20px 10px' }}>
+                              <p style={{ color: '#3b82f6', fontWeight: 600, fontSize: '0.9rem', marginBottom: '14px' }}>
+                                🟢 Đã thiết lập đường hầm bảo mật thành công!
+                              </p>
+                              <p style={{ color: 'var(--color-text)', fontSize: '0.85rem', marginBottom: '14px' }}>
+                                Luồng web (Live Viewport) tạm thời không khả dụng do API Server chưa hỗ trợ. Vui lòng sử dụng phần mềm VNC Client (như RealVNC) để kết nối an toàn qua đường hầm:
+                              </p>
+                              <div style={{ background: 'rgba(0,0,0,0.5)', padding: '10px', borderRadius: '6px', fontFamily: 'monospace', fontSize: '1.2rem', color: 'white', marginBottom: '14px' }}>
+                                {allocatedVncAddr}
+                              </div>
+                              <button
+                                onClick={() => {
+                                  setActiveModal(null);
+                                  window.open(`vnc://${allocatedVncAddr}`, '_self');
+                                }}
+                                style={{
+                                  background: '#3b82f6', border: 'none', borderRadius: '6px', padding: '10px 20px', color: 'white', fontSize: '0.85rem', fontWeight: 600, cursor: 'pointer', boxShadow: '0 4px 12px rgba(59, 130, 246, 0.3)'
+                                }}
+                              >
+                                🌐 Mở bằng VNC Client
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
             </motion.div>
           </div>
         )}
@@ -5886,6 +6090,32 @@ raise RuntimeError('\\n'.join(lines))`;
                                 </button>
                               </div>
                             </div>
+                            
+                            {directLan && (
+                              <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                <label style={{ fontSize: '0.74rem', fontWeight: 600, color: 'var(--color-text)' }}>
+                                  🌐 IP Public truy cập từ xa (Tùy chọn):
+                                </label>
+                                <input
+                                  type="text"
+                                  placeholder="VD: 115.79.88.99"
+                                  value={customRemoteIp}
+                                  onChange={(e) => setCustomRemoteIp(e.target.value)}
+                                  style={{
+                                    width: '100%',
+                                    padding: '8px',
+                                    borderRadius: '6px',
+                                    border: '1px solid var(--color-surface-light)',
+                                    background: 'rgba(0,0,0,0.2)',
+                                    color: 'white',
+                                    fontSize: '0.8rem'
+                                  }}
+                                />
+                                <div style={{ fontSize: '0.7rem', color: 'var(--color-text-secondary)', lineHeight: '1.4' }}>
+                                  Nhập Public IP của mạng LAN (nếu bạn đã NAT Port) để truy cập từ mạng khác. Bỏ trống để dùng IP nội bộ.
+                                </div>
+                              </div>
+                            )}
 
                             {directLan && window.location.protocol === 'https:' && (
                               <div style={{
@@ -6394,7 +6624,7 @@ raise RuntimeError('\\n'.join(lines))`;
                             <div style={{ flex: 1, minHeight: 0, background: 'white', borderRadius: '8px', overflow: 'hidden', border: '1px solid var(--color-surface-light)', position: 'relative' }}>
                               <iframe
                                 ref={previewIframeRef}
-                                src={webPreviewModal.url ? webPreviewModal.url : (directLan ? `http://${webPreviewModal.ip}${webPreviewModal.path || '/'}` : previewBlobUrl)}
+                                src={webPreviewModal.url ? webPreviewModal.url : (directLan ? `http://${customRemoteIp.trim() || webPreviewModal.ip}${webPreviewModal.path || '/'}` : previewBlobUrl)}
                                 style={{
                                   width: '100%',
                                   height: '100%',

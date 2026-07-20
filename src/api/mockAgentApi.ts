@@ -322,4 +322,14 @@ export async function triggerEmergencyRestart(agentUid: string): Promise<any> {
     body: '{}',
   });
 }
+export async function getPublicIp(): Promise<any> {
+  return fetchApi('/api/public/ip/public');
+}
 
+export async function getWorkstationIp(params: { agent_uid?: string, lan_uid?: string, mac?: string }): Promise<any> {
+  const query = new URLSearchParams();
+  if (params.agent_uid) query.append('agent_uid', params.agent_uid);
+  if (params.lan_uid) query.append('lan_uid', params.lan_uid);
+  if (params.mac) query.append('mac', params.mac);
+  return fetchApi(`/api/public/ip/workstation?${query.toString()}`);
+}
