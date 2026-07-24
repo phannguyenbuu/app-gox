@@ -1897,6 +1897,28 @@ except Exception as e:
     }
   };
 
+  // ── SYNC ALL ADDRESS BOOKS ──
+  const handleSyncAllAddressBooks = async () => {
+    if (!filteredPrinters || filteredPrinters.length === 0) {
+      showToast('Không có máy photocopy nào để đồng bộ', 'warning');
+      return;
+    }
+    if (onlineAgents.length === 0) {
+      showToast('Không có Agent nào đang online', 'error');
+      return;
+    }
+
+    showToast(`Đã gửi lệnh đồng bộ toàn bộ danh bạ cho ${filteredPrinters.length} máy...`, 'info', 4000);
+
+    for (const p of filteredPrinters) {
+      try {
+        handleRefetchAddressBook(String(p.id));
+      } catch (err: any) {
+        console.error('Failed sync for printer:', p.id, err);
+      }
+    }
+  };
+
   // ── ADD PUBLIC FTP ──
   const handleAddPublicFtp = async () => {
     const { printerId, name, email, agentUid } = publicFtpData;
@@ -2922,6 +2944,32 @@ except Exception as e:
                 exit={{ opacity: 0, x: -10 }}
                 style={styles.tabContent}
               >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
+                  <div style={{ fontSize: '0.9rem', color: 'var(--color-text-secondary)' }}>
+                    Quản lý danh sách máy photocopy & danh bạ scan
+                  </div>
+                  <button
+                    style={{
+                      ...styles.smallBtn,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '8px 14px',
+                      fontSize: '0.825rem',
+                      fontWeight: 600,
+                      borderColor: '#3b82f6',
+                      color: '#60a5fa',
+                      backgroundColor: 'rgba(59, 130, 246, 0.12)',
+                      cursor: 'pointer',
+                    }}
+                    onClick={handleSyncAllAddressBooks}
+                    disabled={onlineAgents.length === 0 || filteredPrinters.length === 0}
+                    title="Phát lệnh đồng bộ danh bạ tới tất cả các máy photocopy đang hoạt động"
+                  >
+                    🔄 Đồng bộ toàn bộ danh bạ ({filteredPrinters.length} máy)
+                  </button>
+                </div>
+
                 <AnimatedList>
                   {filteredPrinters.length === 0 ? (
                     <div style={styles.emptyText}>Không tìm thấy máy photocopy nào hoạt động trong dải LAN này.</div>
