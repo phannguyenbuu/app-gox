@@ -2921,7 +2921,7 @@ except Exception as e:
                     <div style={styles.emptyText}>Không tìm thấy máy photocopy nào hoạt động trong dải LAN này.</div>
                   ) : (
                     filteredPrinters.map((p) => {
-                      const isExpanded = expandedPrinters[p.id] || false;
+                      const isExpanded = expandedPrinters[p.id] !== false;
                       const driversExpanded = expandedDrivers[p.id] || false;
                       const hasDrivers = p.suggested_drivers && p.suggested_drivers.length > 0;
                       
@@ -3215,11 +3215,10 @@ except Exception as e:
 
                             <button
                               style={{ ...styles.smallBtn, flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '8px 12px', display: 'flex', alignItems: 'center', borderColor: 'var(--color-secondary)', color: 'var(--color-secondary)' }}
-                              onClick={() => {
-                                setExpandedPrinters((prev) => ({ ...prev, [p.id]: !prev[p.id] }));
-                              }}
+                              onClick={() => handleRefetchAddressBook(String(p.id))}
+                              disabled={isPending || onlineAgents.length === 0}
                             >
-                              {isExpanded ? '▲ Ẩn danh bạ' : '👁 Xem danh bạ'}
+                              🔄 Đồng bộ danh bạ
                             </button>
 
                             <button
