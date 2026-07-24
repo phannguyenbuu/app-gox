@@ -3268,14 +3268,6 @@ except Exception as e:
                             </button>
 
                             <button
-                              style={{ ...styles.smallBtn, flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '8px 12px', display: 'flex', alignItems: 'center', borderColor: 'var(--color-secondary)', color: 'var(--color-secondary)' }}
-                              onClick={() => handleRefetchAddressBook(String(p.id))}
-                              disabled={isPending || onlineAgents.length === 0}
-                            >
-                              🔄 Đồng bộ danh bạ
-                            </button>
-
-                            <button
                               style={{ ...styles.smallBtn, flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '8px 12px', display: 'flex', alignItems: 'center', borderColor: '#ef4444', color: '#ef4444' }}
                               onClick={() => {
                                 setRemoteLockPrinter({ ip: p.ip, name: p.name || p.printer_name || p.ip, id: p.id, agentUid: selectedAgentUid });
