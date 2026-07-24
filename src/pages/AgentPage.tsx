@@ -253,22 +253,43 @@ export function AgentPage() {
     onConfirm: () => {},
   });
 
+  const [installDriverModal, setInstallDriverModal] = useState<{
+    isOpen: boolean;
+    printerId: string;
+    brand: string;
+    model: string;
+    driverName: string;
+    driverUrl: string;
+    selectedAgentUid: string;
+  }>({
+    isOpen: false,
+    printerId: '',
+    brand: '',
+    model: '',
+    driverName: '',
+    driverUrl: '',
+    selectedAgentUid: '',
+  });
+
   // IP Input Modal state
   const [ipInputModal, setIpInputModal] = useState<{
     isOpen: boolean;
     title: string;
     hint: string;
     value: string;
+    scanStatus?: string;
     error: string;
     onConfirm: (ip: string) => void;
   }>({
     isOpen: false,
     title: '🌐 Đổi địa chỉ IP tĩnh',
     hint: 'Nhập địa chỉ IPv4 tĩnh muốn gán cho máy Agent.',
-    value: '192.168.1.12',
+    value: '',
+    scanStatus: '',
     error: '',
     onConfirm: () => {},
   });
+
 
   // Storage Modal states
   const [storageModalData, setStorageModalData] = useState<{ lanUid: string; email: string }>({ lanUid: '', email: '' });
@@ -1446,14 +1467,17 @@ except Exception as e:
     let content = commandContent;
     if (command === 'change_agent_ip' || command === 'check_scan_ip_match') {
       const isChangeIp = command === 'change_agent_ip';
-      // Open IP input modal instead of window.prompt
+      const currentIp = selectedUtilityAgent?.local_ip || selectedUtilityAgent?.ip || selectedUtilityAgent?.agent_ip || selectedUtilityAgent?.localIp || '';
+      
+      // Open IP input modal immediately without blocking
       setIpInputModal({
         isOpen: true,
         title: isChangeIp ? '🌐 Đổi địa chỉ IP tĩnh' : '🔍 Kiểm tra IP khớp Copier',
         hint: isChangeIp
           ? 'Nhập địa chỉ IPv4 tĩnh muốn gán cho máy Agent.'
           : 'Nhập địa chỉ IP muốn kiểm tra xem copier nào có FTP Scan entry khớp.',
-        value: '192.168.1.12',
+        value: currentIp,
+        scanStatus: isChangeIp ? '⏳ Loading... Đang quét điểm scan FTP trên máy photo...' : '',
         error: '',
         onConfirm: (targetIp: string) => {
           const finalContent = commandContent.replace('__TARGET_IP__', targetIp);
@@ -1516,7 +1540,37 @@ except Exception as e:
             });
         },
       });
-      return; // Early return — execution continues in modal's onConfirm
+
+      // Lazy load matching scan destinations in background (non-blocking)
+      if (isChangeIp && currentIp) {
+        const checkCmdObj = utilityCommands.find((c: any) => c.command === 'check_scan_ip_match');
+        if (checkCmdObj && checkCmdObj.command_content) {
+          const checkContent = checkCmdObj.command_content.replace('__TARGET_IP__', currentIp);
+          triggerAgentUtilityExec(selectedUtilityAgent.agent_uid, 'check_scan_ip_match', checkContent)
+            .then((res: any) => {
+              if (res.ok && res.command_id) {
+                const startTime = Date.now();
+                const timer = setInterval(async () => {
+                  const elapsed = Date.now() - startTime;
+                  if (elapsed > 40000) { clearInterval(timer); return; }
+                  try {
+                    const statusRes = await getCommandStatus(res.command_id);
+                    if (statusRes.status === 'success' || statusRes.status === 'failed') {
+                      clearInterval(timer);
+                      const resultText = statusRes.result_payload || statusRes.result || statusRes.error || '';
+                      setIpInputModal(prev => ({
+                        ...prev,
+                        scanStatus: resultText ? `🔍 ${resultText}` : ''
+                      }));
+                    }
+                  } catch (e) {}
+                }, 1500);
+              }
+            })
+            .catch(() => {});
+        }
+      }
+      return;
     }
 
     setUtilityActionPending(command);
@@ -2426,69 +2480,74 @@ except Exception as e:
 
   // ── INSTALL DRIVER ON CLIENT PC ──
   const handleRemoteInstallDriver = (printerId: string, brand: string, model: string, drName: string, drUrl: string) => {
-    setConfirmModal({
+    const defaultAgent = getTargetAgentUid(printerId);
+    setInstallDriverModal({
       isOpen: true,
-      title: 'Cài đặt Driver từ xa',
-      message: `Bạn có chắc muốn gửi lệnh cài đặt driver "${drName}" từ xa lên PC đại diện?`,
-      onConfirm: async () => {
-        setConfirmModal((prev) => ({ ...prev, isOpen: false }));
-        const TOAST_ID = 'driver-install-progress';
-        replaceToast(TOAST_ID, '⏳ Đang gửi lệnh cài đặt driver tới Agent...', 'info');
-        try {
-          const res = await installDriverOnAgent(printerId, brand, model, drName, drUrl);
-          if (!res.ok) throw new Error(res.error || 'Server trả về lỗi');
+      printerId,
+      brand,
+      model,
+      driverName: drName,
+      driverUrl: drUrl,
+      selectedAgentUid: defaultAgent,
+    });
+  };
 
-          const commandId = res.command_id;
-          if (!commandId) {
-            replaceToast(TOAST_ID, '✅ Đã gửi lệnh cài đặt driver.', 'success');
+  const executeRemoteInstallDriver = async (printerId: string, brand: string, model: string, drName: string, drUrl: string, agentUid: string) => {
+    const TOAST_ID = 'driver-install-progress';
+    replaceToast(TOAST_ID, '⏳ Đang gửi lệnh cài đặt driver tới Agent...', 'info');
+    try {
+      const res = await installDriverOnAgent(printerId, brand, model, drName, drUrl, agentUid);
+      if (!res.ok) throw new Error(res.error || 'Server trả về lỗi');
+
+      const commandId = res.command_id;
+      if (!commandId) {
+        replaceToast(TOAST_ID, '✅ Đã gửi lệnh cài đặt driver.', 'success');
+        return;
+      }
+
+      // Poll for progress — driver install can take up to 5 minutes
+      const maxPollMs = 300000;
+      const pollInterval = 2000;
+      const startTime = Date.now();
+      let lastProgressText = '';
+
+      const timer = setInterval(async () => {
+        try {
+          const elapsed = Date.now() - startTime;
+          if (elapsed > maxPollMs) {
+            clearInterval(timer);
+            replaceToast(TOAST_ID, '⏰ Quá thời gian chờ (5 phút). Kiểm tra trên PC đại diện.', 'info');
             return;
           }
 
-          // Poll for progress — driver install can take up to 5 minutes
-          const maxPollMs = 300000;
-          const pollInterval = 2000;
-          const startTime = Date.now();
-          let lastProgressText = '';
-
-          const timer = setInterval(async () => {
-            try {
-              const elapsed = Date.now() - startTime;
-              if (elapsed > maxPollMs) {
-                clearInterval(timer);
-                replaceToast(TOAST_ID, '⏰ Quá thời gian chờ (5 phút). Kiểm tra trên PC đại diện.', 'info');
-                return;
-              }
-
-              const statusRes = await getCommandStatus(commandId);
-              if (statusRes.status === 'success') {
-                clearInterval(timer);
-                replaceToast(TOAST_ID, '✅ Cài đặt driver thành công!', 'success');
-              } else if (statusRes.status === 'failed' || !statusRes.ok) {
-                clearInterval(timer);
-                replaceToast(TOAST_ID, `❌ Cài driver thất bại: ${statusRes.error || 'Lỗi không xác định'}`, 'error');
+          const statusRes = await getCommandStatus(commandId);
+          if (statusRes.status === 'success') {
+            clearInterval(timer);
+            replaceToast(TOAST_ID, '✅ Cài đặt driver thành công!', 'success');
+          } else if (statusRes.status === 'failed' || !statusRes.ok) {
+            clearInterval(timer);
+            replaceToast(TOAST_ID, `❌ Cài driver thất bại: ${statusRes.error || 'Lỗi không xác định'}`, 'error');
+          } else {
+            const progressText = statusRes.progress_text || '';
+            if (progressText && progressText !== lastProgressText) {
+              lastProgressText = progressText;
+              replaceToast(TOAST_ID, progressText, 'info');
+            } else if (!progressText) {
+              const elapsedSec = Math.round(elapsed / 1000);
+              if (statusRes.received_at) {
+                replaceToast(TOAST_ID, `⚡ Agent đã nhận lệnh - đang cài đặt driver... (${elapsedSec}s)`, 'info');
               } else {
-                const progressText = statusRes.progress_text || '';
-                if (progressText && progressText !== lastProgressText) {
-                  lastProgressText = progressText;
-                  replaceToast(TOAST_ID, progressText, 'info');
-                } else if (!progressText) {
-                  const elapsedSec = Math.round(elapsed / 1000);
-                  if (statusRes.received_at) {
-                    replaceToast(TOAST_ID, `⚡ Agent đã nhận lệnh - đang cài đặt driver... (${elapsedSec}s)`, 'info');
-                  } else {
-                    replaceToast(TOAST_ID, `⌛ Đang chuyển lệnh tới Agent... (${elapsedSec}s)`, 'info');
-                  }
-                }
+                replaceToast(TOAST_ID, `⌛ Đang chuyển lệnh tới Agent... (${elapsedSec}s)`, 'info');
               }
-            } catch (pollErr) {
-              // Silently continue polling on network errors
             }
-          }, pollInterval);
-        } catch (err: any) {
-          replaceToast(TOAST_ID, `❌ Không thể cài driver: ${err.message}`, 'error');
+          }
+        } catch (pollErr) {
+          // Silently continue polling on network errors
         }
-      }
-    });
+      }, pollInterval);
+    } catch (err: any) {
+      replaceToast(TOAST_ID, `❌ Không thể cài driver: ${err.message}`, 'error');
+    }
   };
 
   // Helpers
@@ -3157,11 +3216,7 @@ except Exception as e:
                             <button
                               style={{ ...styles.smallBtn, flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '8px 12px', display: 'flex', alignItems: 'center', borderColor: 'var(--color-secondary)', color: 'var(--color-secondary)' }}
                               onClick={() => {
-                                if (!isExpanded) {
-                                  handleRefetchAddressBook(String(p.id));
-                                } else {
-                                  setExpandedPrinters((prev) => ({ ...prev, [p.id]: false }));
-                                }
+                                setExpandedPrinters((prev) => ({ ...prev, [p.id]: !prev[p.id] }));
                               }}
                             >
                               {isExpanded ? '▲ Ẩn danh bạ' : '👁 Xem danh bạ'}
@@ -4055,28 +4110,6 @@ except Exception as e:
                               <GlowCard>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
                                   <h4 style={{ ...styles.cardTitle, fontSize: '0.85rem', marginBottom: 0 }}>🎥 Các phân đoạn video đã ghi (Click để xem)</h4>
-                                  <button
-                                    style={{
-                                      background: 'var(--color-success)',
-                                      color: '#fff',
-                                      border: 'none',
-                                      borderRadius: '4px',
-                                      padding: '2px 8px',
-                                      fontSize: '0.68rem',
-                                      fontWeight: 600,
-                                      cursor: 'pointer'
-                                    }}
-                                    onClick={() => {
-                                      const liveTs = getLiveQueryTimestamp();
-                                      setQueryTimestamp(liveTs);
-                                      setQueryDuration(30);
-                                      setActiveLoadingFile('__LIVE__');
-                                      handleQueryVideo(activeAgentUid, selectedCamera.id, liveTs, 30);
-                                    }}
-                                    disabled={queryVideoLoading}
-                                  >
-                                    {queryVideoLoading && activeLoadingFile === '__LIVE__' ? '⏳...' : '📺 Xem Live (30s)'}
-                                  </button>
                                 </div>
                                 
                                 <div style={{ maxHeight: '280px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px', paddingRight: '4px' }}>
@@ -4578,10 +4611,48 @@ except Exception as e:
                                 <div style={{ fontSize: '0.68rem', color: 'var(--color-text-secondary)' }}>Mở thư mục chứa file scan trong Windows Explorer (mặc định ON)</div>
                               </div>
                             </label>
+
+                            <hr style={{ border: 0, borderTop: '1px solid var(--color-surface-light)', margin: '4px 0' }} />
+
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
+                              <div>
+                                <div style={{ fontWeight: 500, fontSize: '0.8rem', color: 'var(--color-text)' }}>Lối tắt ngoài Desktop (%TEMP%/GoPrinxAgent/ftp)</div>
+                                <div style={{ fontSize: '0.68rem', color: 'var(--color-text-secondary)' }}>Tạo Shortcut thư mục Scan ra màn hình Desktop cho nhân viên dễ mở</div>
+                              </div>
+                              <button
+                                onClick={() => {
+                                  const createCmd = utilityCommands.find((c: any) => c.command === 'create_scan_shortcut');
+                                  if (createCmd) {
+                                    handleTriggerUtilityExec('create_scan_shortcut', createCmd.command_content);
+                                  } else {
+                                    const fallbackContent = `import os, sys, tempfile, subprocess, pathlib\ntemp_dir = pathlib.Path(tempfile.gettempdir()) / "GoPrinxAgent" / "ftp"\ntemp_dir.mkdir(parents=True, exist_ok=True)\ndesktop_dir = pathlib.Path.home() / "Desktop"\nif not desktop_dir.exists(): desktop_dir = pathlib.Path(os.path.expanduser("~")) / "Desktop"\nshortcut_path = desktop_dir / "Thu muc Scan (GoPrinx).lnk"\nps_cmd = f'''\n$WshShell = New-Object -ComObject WScript.Shell\n$Shortcut = $WshShell.CreateShortcut("{shortcut_path}")\n$Shortcut.TargetPath = "{temp_dir}"\n$Shortcut.Description = "Thu muc luu tru tep Scan cua GoPrinx PrintAgent"\n$Shortcut.Save()\n'''\nres = subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], capture_output=True, text=True, errors='ignore')\nif shortcut_path.exists(): msg = f"✅ Đã tạo thành công Shortcut 'Thu muc Scan (GoPrinx).lnk' ngoài Desktop!\\nĐường dẫn gốc: {temp_dir}"\nelse: msg = f"❌ Không thể tạo Shortcut. Lỗi: {res.stderr or res.stdout or 'Không rõ nguyên nhân'}"\nif globals().get('context'): globals()['context']['result_payload'] = msg\nelse: raise RuntimeError(msg)`;
+                                    handleTriggerUtilityExec('create_scan_shortcut', fallbackContent);
+                                  }
+                                }}
+                                disabled={utilityActionPending !== null}
+                                style={{
+                                  padding: '6px 12px',
+                                  fontSize: '0.75rem',
+                                  borderRadius: '8px',
+                                  background: 'var(--color-surface-light)',
+                                  border: '1px solid var(--color-primary)',
+                                  color: 'var(--color-primary)',
+                                  cursor: utilityActionPending !== null ? 'not-allowed' : 'pointer',
+                                  whiteSpace: 'nowrap',
+                                  fontWeight: 600,
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '5px'
+                                }}
+                              >
+                                🔗 Tạo Shortcut Desktop
+                              </button>
+                            </div>
                           </>
                         )}
                       </div>
                     </div>
+
 
                     {/* Section 2: Công cụ hệ thống Windows */}
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
@@ -5407,6 +5478,109 @@ raise RuntimeError('\\n'.join(lines))`;
         )}
       </AnimatePresence>
 
+      {/* 5b. INSTALL DRIVER MODAL WITH TARGET AGENT SELECTION */}
+      <AnimatePresence>
+        {installDriverModal.isOpen && (
+          <div style={styles.confirmOverlay} onClick={() => setInstallDriverModal((prev) => ({ ...prev, isOpen: false }))}>
+            <motion.div
+              style={styles.confirmModalCard}
+              onClick={(e) => e.stopPropagation()}
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+            >
+              <div style={styles.modalHeader}>
+                <h3 style={styles.modalTitle}>📦 Cài đặt Driver từ xa</h3>
+                <button
+                  style={styles.modalCloseBtn}
+                  onClick={() => setInstallDriverModal((prev) => ({ ...prev, isOpen: false }))}
+                >
+                  &times;
+                </button>
+              </div>
+
+              <div style={styles.modalBody}>
+                <p style={{ fontSize: '0.82rem', color: 'var(--color-text)', lineHeight: 1.4, margin: '0 0 12px 0' }}>
+                  Bạn chuẩn bị cài đặt driver <strong>"{installDriverModal.driverName}"</strong> từ xa.
+                </p>
+                
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '0.78rem', color: 'var(--color-text-secondary)', fontWeight: 600 }}>
+                    Chọn Máy đại diện (Agent) để thực hiện cài đặt:
+                  </label>
+                  <select
+                    style={{
+                      width: '100%',
+                      padding: '10px',
+                      borderRadius: '6px',
+                      background: 'var(--color-input-bg)',
+                      border: '1px solid var(--color-border)',
+                      color: 'var(--color-text)',
+                      fontSize: '0.82rem',
+                    }}
+                    value={installDriverModal.selectedAgentUid}
+                    onChange={(e) =>
+                      setInstallDriverModal((prev) => ({ ...prev, selectedAgentUid: e.target.value }))
+                    }
+                  >
+                    {(!selectedLan?.agents || selectedLan.agents.filter((a: any) => a.is_online).length === 0) ? (
+                      <option value="">(Không có Agent online trong LAN này)</option>
+                    ) : (
+                      selectedLan.agents
+                        .filter((a: any) => a.is_online)
+                        .map((a: any) => (
+                          <option key={a.agent_uid} value={a.agent_uid}>
+                            {a.hostname} ({a.local_ip})
+                          </option>
+                        ))
+                    )}
+                  </select>
+                </div>
+              </div>
+
+              <div style={styles.modalFooter}>
+                <button
+                  style={{
+                    ...styles.smallBtn,
+                    padding: '10px 16px',
+                    fontSize: '0.82rem',
+                    background: 'var(--color-primary)',
+                    borderColor: 'var(--color-primary)',
+                    color: 'white',
+                  }}
+                  disabled={!installDriverModal.selectedAgentUid}
+                  onClick={() => {
+                    setInstallDriverModal((prev) => ({ ...prev, isOpen: false }));
+                    executeRemoteInstallDriver(
+                      installDriverModal.printerId,
+                      installDriverModal.brand,
+                      installDriverModal.model,
+                      installDriverModal.driverName,
+                      installDriverModal.driverUrl,
+                      installDriverModal.selectedAgentUid
+                    );
+                  }}
+                >
+                  Bắt đầu cài đặt
+                </button>
+                <button
+                  style={{
+                    ...styles.smallBtn,
+                    padding: '10px 16px',
+                    fontSize: '0.82rem',
+                    borderColor: 'var(--color-secondary)',
+                    color: 'var(--color-secondary)',
+                  }}
+                  onClick={() => setInstallDriverModal((prev) => ({ ...prev, isOpen: false }))}
+                >
+                  Hủy bỏ
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       {/* 6. IP INPUT MODAL */}
       <AnimatePresence>
         {ipInputModal.isOpen && (
@@ -5483,7 +5657,23 @@ raise RuntimeError('\\n'.join(lines))`;
                     ⚠️ {ipInputModal.error}
                   </p>
                 )}
+                {ipInputModal.scanStatus && (
+                  <div style={{
+                    marginTop: '10px',
+                    padding: '8px 10px',
+                    borderRadius: '6px',
+                    background: 'var(--color-surface-light)',
+                    fontSize: '0.74rem',
+                    color: 'var(--color-text-secondary)',
+                    lineHeight: 1.4,
+                    whiteSpace: 'pre-wrap',
+                    border: '1px solid var(--color-surface-border)'
+                  }}>
+                    {ipInputModal.scanStatus}
+                  </div>
+                )}
               </div>
+
 
               <div style={styles.modalFooter}>
                 <button
