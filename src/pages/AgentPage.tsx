@@ -2979,7 +2979,14 @@ except Exception as e:
                       const driversExpanded = expandedDrivers[p.id] || false;
                       const hasDrivers = p.suggested_drivers && p.suggested_drivers.length > 0;
                       
-                      const sync = liveAddressBooks[p.id] || p.address_book_sync || {};
+                      let sync = liveAddressBooks[p.id] || p.address_book_sync || {};
+                      if (typeof sync === 'string') {
+                        try {
+                          sync = JSON.parse(sync);
+                        } catch (e) {
+                          sync = {};
+                        }
+                      }
                       const hasAddressList = Array.isArray(sync.address_list) && sync.address_list.length > 0;
                       const syncCount = sync.address_list ? sync.address_list.length : 0;
                       const syncTime = sync.timestamp ? new Date(sync.timestamp).toLocaleTimeString('vi-VN') : '';
