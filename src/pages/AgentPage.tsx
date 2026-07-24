@@ -2979,7 +2979,8 @@ except Exception as e:
                       const driversExpanded = expandedDrivers[p.id] || false;
                       const hasDrivers = p.suggested_drivers && p.suggested_drivers.length > 0;
                       
-                      const sync = liveAddressBooks[p.id] || {};
+                      const sync = liveAddressBooks[p.id] || p.address_book_sync || {};
+                      const hasAddressList = Array.isArray(sync.address_list) && sync.address_list.length > 0;
                       const syncCount = sync.address_list ? sync.address_list.length : 0;
                       const syncTime = sync.timestamp ? new Date(sync.timestamp).toLocaleTimeString('vi-VN') : '';
                       
@@ -3101,9 +3102,9 @@ except Exception as e:
                               <div style={styles.syncStatusText}>
                                 {isPending ? (
                                   <span style={{ color: 'var(--color-warning)', fontWeight: 600 }}>{statusMsg}</span>
-                                ) : sync.status === 'success' ? (
+                                ) : hasAddressList ? (
                                   <span style={{ color: 'var(--color-success)', fontWeight: 600 }}>
-                                    ✔ Đồng bộ OK ({syncCount} mục) · {syncTime}
+                                    ✔ Đồng bộ OK ({syncCount} mục) {syncTime ? `· ${syncTime}` : ''}
                                   </span>
                                 ) : sync.status === 'error' ? (
                                   <span style={{ color: 'var(--color-error)' }}>
@@ -3313,7 +3314,7 @@ except Exception as e:
                                 <div style={styles.destinationsBlock}>
                                   <span style={styles.destBlockTitle}>📂 Danh sách điểm scan:</span>
                                   
-                                  {sync.status === 'success' && sync.address_list && sync.address_list.length > 0 ? (
+                                  {hasAddressList ? (
                                     sync.address_list
                                       .filter((entry: any) => entry.type !== 'Summary' && entry.registration_no !== '-')
                                       .map((entry: any, eIdx: number) => {
