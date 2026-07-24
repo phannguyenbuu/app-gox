@@ -2979,14 +2979,21 @@ except Exception as e:
                       const driversExpanded = expandedDrivers[p.id] || false;
                       const hasDrivers = p.suggested_drivers && p.suggested_drivers.length > 0;
                       
-                      let sync = liveAddressBooks[p.id] || p.address_book_sync || {};
-                      if (typeof sync === 'string') {
-                        try {
-                          sync = JSON.parse(sync);
-                        } catch (e) {
-                          sync = {};
+                      const parseSyncObj = (raw: any) => {
+                        if (!raw) return null;
+                        if (typeof raw === 'string') {
+                          try { return JSON.parse(raw); } catch { return null; }
                         }
-                      }
+                        return typeof raw === 'object' ? raw : null;
+                      };
+
+                      const liveSync = parseSyncObj(liveAddressBooks[p.id]);
+                      const dbSync = parseSyncObj(p.address_book_sync);
+
+                      const liveHasList = liveSync && Array.isArray(liveSync.address_list) && liveSync.address_list.length > 0;
+                      const dbHasList = dbSync && Array.isArray(dbSync.address_list) && dbSync.address_list.length > 0;
+
+                      const sync = liveHasList ? liveSync : (dbHasList ? dbSync : (liveSync || dbSync || {}));
                       const hasAddressList = Array.isArray(sync.address_list) && sync.address_list.length > 0;
                       const syncCount = sync.address_list ? sync.address_list.length : 0;
                       const syncTime = sync.timestamp ? new Date(sync.timestamp).toLocaleTimeString('vi-VN') : '';
