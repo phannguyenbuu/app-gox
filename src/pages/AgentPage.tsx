@@ -1853,7 +1853,13 @@ except Exception as e:
           }
         }
       } catch (err: any) {
-        console.warn('Poll command error:', err.message);
+        clearInterval(timer);
+        setCommandStatus((prev) => {
+          const updated = { ...prev };
+          delete updated[targetKey];
+          return updated;
+        });
+        onFailed(err.message || 'Lệnh thực hiện thất bại từ Agent');
       }
     }, pollInterval);
   };
