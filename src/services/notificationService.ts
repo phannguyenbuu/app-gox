@@ -24,9 +24,11 @@ export const useNotificationStore = create<NotificationStore>((set) => ({
 
   showNotification: (message, type) => {
     const id = `notification-${++notificationCounter}-${Date.now()}`;
+    const words = String(message || '').trim().split(/\s+/);
+    const shortMessage = words.length > 15 ? words.slice(0, 15).join(' ') + '…' : String(message || '').trim();
     const notification: Notification = {
       id,
-      message,
+      message: shortMessage,
       type,
       createdAt: Date.now(),
     };

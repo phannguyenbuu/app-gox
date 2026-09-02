@@ -3,3 +3,6 @@ dist/
 *.tsbuildinfo
 .env.development
 frontend/
+*.bak
+*.tar.gz
+gitlog.txt

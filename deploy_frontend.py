@@ -18,10 +18,10 @@ def main():
         
     deploy_host = os.environ.get("DEPLOY_HOST", "157.66.80.125")
     
-    print(f"Connecting to VPS at {deploy_host} using key: {key_filename}...")
+    print(f"Connecting to VPS at {deploy_host} using password...")
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(deploy_host, username='root', key_filename=key_filename)
+    ssh.connect(deploy_host, username='root', password='@baoLong0511', timeout=10)
     
     print("Opening SFTP session...")
     sftp = ssh.open_sftp()

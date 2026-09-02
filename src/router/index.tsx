@@ -16,6 +16,9 @@ import type { User } from '../types/auth';
 const LoginPage = React.lazy(() =>
   import('../pages/LoginPage').then((m) => ({ default: m.LoginPage }))
 );
+const NotFoundPage = React.lazy(() =>
+  import('../pages/NotFoundPage').then((m) => ({ default: m.default }))
+);
 const DashboardPage = React.lazy(() =>
   import('../pages/DashboardPage').then((m) => ({ default: m.DashboardPage }))
 );
@@ -52,7 +55,6 @@ const RepairHistoryPage = React.lazy(() =>
 const AccountPage = React.lazy(() =>
   import('../pages/AccountPage').then((m) => ({ default: m.AccountPage }))
 );
-const DownloadPage = React.lazy(() => import('../pages/DownloadPage'));
 const DriversPage = React.lazy(() => import('../pages/DriversPage'));
 const AgentPage = React.lazy(() =>
   import('../pages/AgentPage').then((m) => ({ default: m.AgentPage }))
@@ -116,6 +118,8 @@ export function ProtectedRoute({ allowedRoles }: ProtectedRouteProps) {
 
 // ---------- App Router ----------
 export function AppRouter() {
+  const isTunnelSubdomain = window.location.hostname.endsWith('.app.goxprint.com') && window.location.hostname !== 'app.goxprint.com';
+
   return (
     <BrowserRouter>
       <Suspense fallback={<PageLoading />}>
@@ -145,15 +149,15 @@ export function AppRouter() {
               <Route path="/history" element={<RepairHistoryPage />} />
               <Route path="/agents" element={<AgentPage />} />
               <Route path="/tech" element={<AgentPage />} />
-              <Route path="/downloads" element={<DownloadPage />} />
+
               <Route path="/drivers" element={<DriversPage />} />
               <Route path="/account" element={<AccountPage />} />
             </Route>
           </Route>
 
           {/* Default redirect */}
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route path="/" element={isTunnelSubdomain ? <NotFoundPage /> : <Navigate to="/dashboard" replace />} />
+          <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </Suspense>
     </BrowserRouter>

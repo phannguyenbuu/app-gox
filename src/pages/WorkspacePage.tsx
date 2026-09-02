@@ -97,7 +97,7 @@ export function WorkspacePage() {
           const checked = activeIds.includes(ws.id);
           return (
             <div key={ws.id}>
-            <motion.button
+            <motion.div
               style={{
                 ...styles.card,
                 borderColor: checked ? (ws.color || 'var(--color-primary)') : 'var(--color-surface-light)',
@@ -134,7 +134,7 @@ export function WorkspacePage() {
                 aria-label="Chọn màu"
                 title="Chọn màu"
               />
-            </motion.button>
+            </motion.div>
             <AnimatePresence>
               {colorPickerWsId === ws.id && (
                 <motion.div
