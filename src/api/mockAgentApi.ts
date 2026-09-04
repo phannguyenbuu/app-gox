@@ -2,36 +2,29 @@ import type { Agent, AgentActionResult, PrinterDriverConfig, ScanConfig, Copier 
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
 
-const pendingRequests = new Map<string, Promise<any>>();
+export async function fetchApi(path: string, options: RequestInit = {}) {
+  const method = (options.method || 'GET').toUpperCase();
+  const separator = path.includes('?') ? '&' : '?';
+  const urlPath = method === 'GET' ? `${path}${separator}_t=${Date.now()}` : path;
 
-async function fetchApi(path: string, options: RequestInit = {}) {
-  const cacheKey = `${options.method || 'GET'}:${path}:${options.body || ''}`;
-  if (pendingRequests.has(cacheKey)) {
-    return pendingRequests.get(cacheKey)!;
+  const res = await fetch(`${BASE_URL}${urlPath}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+      'X-API-Token': 'change-me',
+      ...options.headers,
+    },
+    cache: 'no-store',
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.error || `HTTP error! status: ${res.status}`);
   }
-
-  const promise = (async () => {
-    try {
-      const res = await fetch(`${BASE_URL}${path}`, {
-        ...options,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Token': 'change-me',
-          ...options.headers,
-        },
-      });
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        throw new Error(errorData.error || `HTTP error! status: ${res.status}`);
-      }
-      return await res.json();
-    } finally {
-      pendingRequests.delete(cacheKey);
-    }
-  })();
-
-  pendingRequests.set(cacheKey, promise);
-  return promise;
+  return await res.json();
 }
 
 export async function mockGetAgents(lanUid?: string): Promise<Agent[]> {
@@ -53,7 +46,7 @@ export async function mockGetAgents(lanUid?: string): Promise<Agent[]> {
             hostname: agent.hostname || agent.agent_uid || 'Agent',
             ipAddress: agent.local_ip || '',
             os: 'Windows',
-            status: agent.is_online ? 'online' : 'offline',
+            status: (agent.is_agent_active ?? agent.is_online) ? 'online' : 'offline',
             lastSeen: agent.updated_at || '',
             driverInstalled: true,
             scanSmbInstalled: false,
@@ -140,19 +133,21 @@ export interface LanSiteInfo {
   printers: any[];
 }
 
-export async function getLanSites(): Promise<LanSiteInfo[]> {
+export async function getLanSites(publicIp?: string): Promise<any> {
   try {
-    const res = await fetchApi('/api/lan-sites?lead=default');
-    return res.rows || [];
+    const query = publicIp ? `&public_ip=${encodeURIComponent(publicIp)}` : '';
+    const res = await fetchApi(`/api/lan-sites?lead=default${query}`);
+    return res || { rows: [] };
   } catch (err) {
     console.error('Failed to fetch LAN sites:', err);
-    return [];
+    return { rows: [] };
   }
 }
 
-export async function mockGetCopiers(lanUid?: string): Promise<Copier[]> {
+export async function mockGetCopiers(lanUid?: string, publicIp?: string): Promise<Copier[]> {
   try {
-    const res = await fetchApi('/api/lan-sites?lead=default');
+    const query = publicIp ? `&public_ip=${encodeURIComponent(publicIp)}` : '';
+    const res = await fetchApi(`/api/lan-sites?lead=default${query}`);
     const rows = res.rows || [];
     const uniqueCopiers = new Map<string, Copier>();
 
@@ -216,27 +211,47 @@ export async function mockDeleteAgent(agentId: string): Promise<AgentActionResul
 
 // ── REAL API CALLS TO VPS BACKEND ──
 
-export async function saveCopierCredentials(printerId: string, user: string, pass: string): Promise<any> {
-  return fetchApi(`/api/devices/${printerId}/credentials`, {
+export async function saveCopierCredentials(printerRef: string, user: string, pass: string, macId?: string, printerType?: string): Promise<any> {
+  return fetchApi(`/api/devices/${encodeURIComponent(printerRef)}/credentials`, {
     method: 'PATCH',
-    body: JSON.stringify({ auth_user: user, auth_password: pass })
+    body: JSON.stringify({ auth_user: user, auth_password: pass, mac_id: macId || printerRef, printer_type: printerType })
   });
 }
 
-export async function triggerFetchAddressBook(printerId: string, agentUid?: string): Promise<any> {
+export async function triggerFetchAddressBook(printerId: string, agentUid?: string, extraData?: any): Promise<any> {
   const path = agentUid ? `/api/devices/${printerId}/fetch-address-book?agent_uid=${agentUid}` : `/api/devices/${printerId}/fetch-address-book`;
-  return fetchApi(path, { method: 'POST' });
+  return fetchApi(path, {
+    method: 'POST',
+    body: JSON.stringify(extraData || {})
+  });
+}
+
+/** Xóa ScanPoint record trên VPS DB cho một máy in (by MAC).
+ *  Gọi trước triggerFetchAddressBook() để đảm bảo data đồng bộ mới là sạch 100%. */
+export async function clearScanPoint(macId: string): Promise<any> {
+  const norm = macId.trim().toUpperCase().replace(/-/g, ':');
+  return fetchApi(`/api/scan-points/${encodeURIComponent(norm)}`, {
+    method: 'DELETE',
+  });
+}
+
+/** Xóa toàn bộ Printer + DeviceInfor cũ cho một LAN (by lan_uid) và clear RAM cache VPS.
+ *  Gọi trước force_subnet_scan để đảm bảo kết quả quét không bị lẫn IP cũ. */
+export async function purgeLanPrinters(lanUid: string): Promise<any> {
+  return fetchApi(`/api/lan-sites/${encodeURIComponent(lanUid)}/printers`, {
+    method: 'DELETE',
+  });
 }
 
 export async function getCommandStatus(commandId: number): Promise<any> {
   return fetchApi(`/api/commands/${commandId}/status`);
 }
 
-export async function addEmailDestination(printerId: string, name: string, email: string, agentUid?: string): Promise<any> {
+export async function addEmailDestination(printerId: string, name: string, email: string, agentUid?: string, extraData?: any): Promise<any> {
   const path = agentUid ? `/api/devices/${printerId}/add-email-dest?agent_uid=${agentUid}` : `/api/devices/${printerId}/add-email-dest`;
   return fetchApi(path, {
     method: 'POST',
-    body: JSON.stringify({ name, email })
+    body: JSON.stringify({ name, email, ...(extraData || {}) })
   });
 }
 
@@ -271,10 +286,10 @@ export async function getScansFiles(lanUid: string, email: string): Promise<any>
   return fetchApi(`/api/scans/files?lan_uid=${encodeURIComponent(lanUid)}&email=${encodeURIComponent(email)}`);
 }
 
-export async function installDriverOnAgent(printerId: string, brand: string, model: string, driverName: string, driverUrl: string): Promise<any> {
-  return fetchApi(`/api/devices/${printerId}/install-driver`, {
+export async function installDriverOnAgent(printerId: string, brand: string, model: string, driverName: string, driverUrl: string, agentUid?: string, printerIp?: string, macId?: string): Promise<any> {
+  return fetchApi(`/api/devices/${encodeURIComponent(printerId)}/install-driver`, {
     method: 'POST',
-    body: JSON.stringify({ brand, model, driver_name: driverName, driver_url: driverUrl })
+    body: JSON.stringify({ brand, model, driver_name: driverName, driver_url: driverUrl, agent_uid: agentUid, printer_ip: printerIp, mac_id: macId })
   });
 }
 
@@ -282,11 +297,15 @@ export async function getAgentSettings(agentUid: string): Promise<any> {
   return fetchApi(`/api/agents/${agentUid}/settings?lead=default`);
 }
 
-export async function getJobs(lead?: string, lanUid?: string, agentUid?: string): Promise<any> {
+export async function getJobs(lead?: string, lanUid?: string, agentUid?: string, page: number = 1, limit: number = 50, status?: string, q?: string): Promise<any> {
   const params = new URLSearchParams();
   if (lead) params.append('lead', lead);
   if (lanUid) params.append('lan_uid', lanUid);
   if (agentUid) params.append('agent_uid', agentUid);
+  if (page) params.append('page', page.toString());
+  if (limit) params.append('limit', limit.toString());
+  if (status && status !== 'all') params.append('status', status);
+  if (q) params.append('q', q);
   params.append('t', Date.now().toString());
   return fetchApi(`/api/jobs?${params.toString()}`);
 }
@@ -309,10 +328,19 @@ export async function getAgentUtilityCommands(agentUid: string): Promise<any> {
   return fetchApi(`/api/agents/${agentUid}/utility-commands?lead=default&t=${Date.now()}`);
 }
 
-export async function triggerAgentUtilityExec(agentUid: string, command: string, commandContent: string): Promise<any> {
+export async function triggerAgentUtilityExec(
+  agentUid: string,
+  command: string,
+  commandContent: string,
+  extraParams?: Record<string, any>
+): Promise<any> {
   return fetchApi(`/api/agents/${agentUid}/utility/exec?lead=default`, {
     method: 'POST',
-    body: JSON.stringify({ command, command_content: commandContent }),
+    body: JSON.stringify({
+      command,
+      command_content: commandContent,
+      ...(extraParams || {})
+    }),
   });
 }
 
@@ -322,14 +350,21 @@ export async function triggerEmergencyRestart(agentUid: string): Promise<any> {
     body: '{}',
   });
 }
+
+
+
+// Alias for deleteEmailDestination
+export const deleteScanPoint = deleteEmailDestination;
+
 export async function getPublicIp(): Promise<any> {
   return fetchApi('/api/public/ip/public');
 }
 
-export async function getWorkstationIp(params: { agent_uid?: string, lan_uid?: string, mac?: string }): Promise<any> {
+export async function getWorkstationIp(params: { agent_uid?: string; lan_uid?: string; mac?: string }): Promise<any> {
   const query = new URLSearchParams();
   if (params.agent_uid) query.append('agent_uid', params.agent_uid);
   if (params.lan_uid) query.append('lan_uid', params.lan_uid);
   if (params.mac) query.append('mac', params.mac);
   return fetchApi(`/api/public/ip/workstation?${query.toString()}`);
 }
+

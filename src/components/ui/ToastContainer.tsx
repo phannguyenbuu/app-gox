@@ -3,24 +3,21 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useNotificationStore, type NotificationType } from '../../services/notificationService';
 
 // Inline style approach using CSS variables directly
-const typeStyles: Record<NotificationType, React.CSSProperties> = {
+const typeStyles: Record<NotificationType, { color: string; borderColor: string; icon: string }> = {
   success: {
-    background: 'color-mix(in srgb, var(--color-success) 12%, var(--color-surface))',
-    border: '1px solid var(--color-success)',
-    color: 'var(--color-text)',
-    boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+    color: 'var(--color-success, #10b981)',
+    borderColor: 'rgba(16, 185, 129, 0.4)',
+    icon: '✔',
   },
   error: {
-    background: 'color-mix(in srgb, var(--color-error) 12%, var(--color-surface))',
-    border: '1px solid var(--color-error)',
-    color: 'var(--color-text)',
-    boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+    color: 'var(--color-error, #ef4444)',
+    borderColor: 'rgba(239, 68, 68, 0.4)',
+    icon: '✖',
   },
   info: {
-    background: 'color-mix(in srgb, var(--color-primary) 12%, var(--color-surface))',
-    border: '1px solid var(--color-primary)',
-    color: 'var(--color-text)',
-    boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+    color: 'var(--color-text-secondary, #94a3b8)',
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+    icon: '⏳',
   },
 };
 
@@ -31,41 +28,52 @@ const ToastContainer: React.FC = () => {
     <div
       style={{
         position: 'fixed',
-        top: 16,
-        left: '50%',
-        transform: 'translateX(-50%)',
+        top: 12,
+        right: 12,
         zIndex: 9999,
         display: 'flex',
         flexDirection: 'column',
-        gap: 8,
-        width: '90%',
-        maxWidth: 400,
+        alignItems: 'flex-end',
+        gap: 4,
+        width: 'auto',
+        maxWidth: 'min(48vw, 240px)',
         pointerEvents: 'none',
       }}
     >
       <AnimatePresence>
-        {notifications.map((n) => (
-          <motion.div
-            key={n.id}
-            initial={{ opacity: 0, y: -20, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -10, scale: 0.95 }}
-            transition={{ duration: 0.25, ease: [0.4, 0, 0.2, 1] }}
-            onClick={() => removeNotification(n.id)}
-            style={{
-              pointerEvents: 'auto',
-              cursor: 'pointer',
-              borderRadius: 10,
-              padding: '12px 16px',
-              fontSize: 14,
-              fontWeight: 500,
-              backdropFilter: 'blur(12px)',
-              ...typeStyles[n.type],
-            }}
-          >
-            {n.message}
-          </motion.div>
-        ))}
+        {notifications.map((n) => {
+          const style = typeStyles[n.type] || typeStyles.info;
+          return (
+            <motion.div
+              key={n.id}
+              initial={{ opacity: 0, x: 15, scale: 0.95 }}
+              animate={{ opacity: 1, x: 0, scale: 1 }}
+              exit={{ opacity: 0, x: 15, scale: 0.95 }}
+              transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+              onClick={() => removeNotification(n.id)}
+              style={{
+                pointerEvents: 'auto',
+                cursor: 'pointer',
+                background: 'transparent',
+                backdropFilter: 'blur(4px)',
+                borderRadius: 4,
+                padding: '3px 8px',
+                fontSize: '0.72rem',
+                lineHeight: 1.2,
+                fontWeight: 500,
+                border: `1px solid ${style.borderColor}`,
+                color: style.color,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 5,
+                wordBreak: 'break-word',
+              }}
+            >
+              <span style={{ fontSize: '0.75rem', lineHeight: 1 }}>{style.icon}</span>
+              <span>{n.message}</span>
+            </motion.div>
+          );
+        })}
       </AnimatePresence>
     </div>
   );

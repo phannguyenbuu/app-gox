@@ -9,6 +9,7 @@ import { validateRepairRequest } from '../services/validation';
 import { AnimatedButton } from '../components/ui/AnimatedButton';
 import { GlowCard } from '../components/ui/GlowCard';
 import { LoadingSpinner } from '../components/ui/LoadingSpinner';
+import { showNotification } from '../services/notificationService';
 import type { Priority, Attachment } from '../types/repair';
 
 function removeDiacritics(str: string): string {
@@ -184,6 +185,7 @@ export function CreateRequestPage() {
       });
 
       if (result.success) {
+        showNotification('Tạo yêu cầu', 'success');
         // If technician and auto-accept is checked, accept the request immediately
         if (user.role === 'technician' && autoAccept) {
           const requests = useRepairStore.getState().requests;

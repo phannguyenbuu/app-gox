@@ -14,6 +14,7 @@ import {
   type StatPeriod,
 } from '../services/statsService';
 import { useLocationStore } from '../stores/locationStore';
+import { showNotification } from '../services/notificationService';
 import type { RepairStatus } from '../types/repair';
 import type { WorkHistoryEntry } from '../types/auth';
 
@@ -283,6 +284,7 @@ export function AccountPage() {
     updateProfile({ fullName: fullName.trim(), phone: phone.trim() || undefined });
     setEditing(false);
     setSaved(true);
+    showNotification('Lưu thông tin', 'success');
     setTimeout(() => setSaved(false), 2000);
   };
 
@@ -296,6 +298,7 @@ export function AccountPage() {
     setPwLoading(false);
     if (result.success) {
       setPwSuccess(true);
+      showNotification('Đổi mật khẩu', 'success');
       setCurrentPw(''); setNewPw(''); setConfirmPw('');
       setTimeout(() => { setPwSuccess(false); setChangingPw(false); }, 2000);
     } else {

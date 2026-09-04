@@ -5,7 +5,20 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: '0.0.0.0',
-    allowedHosts: ['app.goxprint.com'],
+    port: 5173,
+    allowedHosts: ['app.goxprint.com', 'localhost'],
+    proxy: {
+      '/api': {
+        target: 'https://agentapi.quanlymay.com',
+        changeOrigin: true,
+        secure: false,
+      },
+      '/ui': {
+        target: 'https://agentapi.quanlymay.com',
+        changeOrigin: true,
+        secure: false,
+      },
+    },
   },
   test: {
     globals: true,

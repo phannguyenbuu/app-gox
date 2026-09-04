@@ -12,8 +12,6 @@ const tabs: NavTab[] = [
   { label: 'Dashboard', icon: '📊', path: '/dashboard' },
   { label: 'Yêu cầu', icon: '📋', path: '/requests' },
   { label: 'Kỹ thuật', icon: '🖥️', path: '/tech' },
-  { label: 'Job', icon: '📋', path: '/downloads' },
-  { label: 'Địa điểm', icon: '📍', path: '/locations' },
   { label: 'Tài khoản', icon: '👤', path: '/account' },
 ];
 
@@ -45,13 +43,10 @@ export function BottomNav() {
     >
       {tabs.map((tab, index) => {
         const isActive = index === activeIndex;
-        const isDownloadTab = tab.path === '/downloads';
 
         return (
           <React.Fragment key={tab.path}>
-            {isDownloadTab && (
-              <div style={{ width: 1, height: 24, background: 'var(--color-surface-light)', margin: '0 4px' }} />
-            )}
+
             <button
               onClick={() => navigate(tab.path)}
               style={{
