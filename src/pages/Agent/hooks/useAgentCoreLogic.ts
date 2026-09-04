@@ -132,8 +132,7 @@ export const useAgentCoreLogic = (deps: any = {}) => {
     setViewOutputModal,
     setIpInputModal,
     setCommandStatus,
-    fetchLanSitesData: lanPrinters.fetchLanSitesData,
-    setLanSites: lanPrinters.setLanSites
+    fetchLanSitesData: lanPrinters.fetchLanSitesData
   });
 
   // Cập nhật ref sau khi utility đã được khởi tạo

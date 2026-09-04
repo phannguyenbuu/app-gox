@@ -65,7 +65,7 @@ export const useAgentScanActions = (deps: any = {}) => {
 
   const resolveCopierCredentials = async (printerObj: any): Promise<{ user: string; pass: string; mac: string }> => {
     const rawMac = String(printerObj?.mac_address || printerObj?.mac_id || printerObj?.mac || '').trim();
-    const rawIp = String(printerObj?.ip || printerObj?.printer_ip || (typeof printerObj === 'string' ? printerObj : '') || printerObj?.id || '').trim();
+    const rawIp = String(printerObj?.ip || printerObj?.printer_ip || (typeof printerObj === 'string' ? printerObj : '') || '').trim();
 
     const mac = rawMac.toUpperCase().replace(/[^0-9A-F:]/g, '');
     const normMac = mac.replace(/[:-]/g, '');
@@ -163,7 +163,7 @@ export const useAgentScanActions = (deps: any = {}) => {
   // ── DELETE DESTINATION ──
   const handleDeleteDest = (printerId: string, entry: any) => {
     const allPrinters = (lanSites || []).flatMap((s: any) => s.printers || []);
-    const printerObj = allPrinters.find((item: any) => String(item.id) === String(printerId) || item.mac_id === printerId || item.ip === printerId) || selectedLan?.printers?.[0];
+    const printerObj = allPrinters.find((item: any) => item.mac_id === printerId || item.mac_address === printerId || item.ip === printerId || String(item.id) === String(printerId)) || undefined;
     const lanPublicIp = selectedLan?.public_ip || selectedLan?.wan_ip;
     const sameIpAgent = (selectedLan?.agents || []).find((a: any) => a.is_agent_active && ((a.public_ip && a.public_ip === lanPublicIp) || (a.wan_ip && a.wan_ip === lanPublicIp)))?.agent_uid;
     const targetAgent = getTargetAgentUid(printerId) || printerObj?.agent_uid || sameIpAgent || '';
@@ -214,14 +214,9 @@ export const useAgentScanActions = (deps: any = {}) => {
       const allPrinters = (lanSites || []).flatMap((s: any) => s.printers || []);
       const cleanTargetId = String(printerId || '').toUpperCase().replace(/[:-]/g, '');
       const printerObj = allPrinters.find((item: any) => {
-        const iId = String(item.id || '');
-        const iIp = String(item.ip || item.printer_ip || '');
         const iMac = String(item.mac_address || item.mac_id || item.mac || '').toUpperCase().replace(/[:-]/g, '');
-        return iId === String(printerId) || iIp === printerId || (cleanTargetId && iMac === cleanTargetId);
-      }) || (allPrinters.find((item: any) => {
-        const n = (item.printer_name || item.name || item.brand || '').toLowerCase();
-        return n.includes('ricoh') || n.includes('toshiba');
-      })) || allPrinters[0];
+        return (cleanTargetId && iMac === cleanTargetId) || item.ip === printerId;
+      });
       const macStr = (printerObj?.mac_address || printerObj?.mac_id || String(printerId) || '').toUpperCase().replace(/-/g, ':');
       const isToshiba = (printerObj?.printer_type || printerObj?.printer_name || printerObj?.brand || '').toLowerCase().includes('toshiba') || macStr.startsWith('00:80:91');
       const cmdName = isToshiba ? 'toshiba_delete_scan' : 'ricoh_delete_scan';
@@ -801,7 +796,7 @@ export const useAgentScanActions = (deps: any = {}) => {
   };
 
   const handleAddPublicFtp = async () => {
-    const { printerId, name, email, agentUid } = deps.publicFtpData || {};
+    const { printerId, printerObj: directPrinterObj, name, email, agentUid } = deps.publicFtpData || {};
     if (!name || !name.trim()) {
       if (showToast) showToast('Vui lòng nhập tên điểm scan', 'error');
       return;
@@ -809,7 +804,8 @@ export const useAgentScanActions = (deps: any = {}) => {
     if (deps.setPublicFtpLoading) deps.setPublicFtpLoading(true);
     try {
       const allPrinters = (lanSites || []).flatMap((s: any) => s.printers || []);
-      const printerObj = allPrinters.find((item: any) => String(item.id) === String(printerId) || item.mac_id === printerId || item.ip === printerId) || selectedLan?.printers?.[0];
+      const printerObj = directPrinterObj ||
+        allPrinters.find((item: any) => item.mac_id === printerId || item.mac_address === printerId);
       const { user: authUser, pass: authPass, mac: normMac } = await resolveCopierCredentials(printerObj || { id: printerId, mac_address: printerId });
 
       const extraPayload = {

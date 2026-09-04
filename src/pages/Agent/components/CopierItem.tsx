@@ -78,7 +78,7 @@ export function CopierItem({
   const [selectedAgentForSync, setSelectedAgentForSync] = React.useState<string>('');
 
   React.useEffect(() => {
-    const defaultUid = p?.agent_uid || activeAgentUid || selectedAgentUid || (onlineAgents && onlineAgents[0]?.agent_uid) || '';
+    const defaultUid = p?.agent_uid || activeAgentUid || selectedAgentUid || '';
     setSelectedAgentForSync(defaultUid);
   }, [p, activeAgentUid, selectedAgentUid, onlineAgents]);
 
@@ -182,7 +182,11 @@ export function CopierItem({
     }
 
     const cmdName = isToshiba ? 'toshiba_change_ftp' : 'ricoh_change_ftp';
-    const agent = selectedLan?.agents?.find((a: any) => a.is_agent_active) || selectedLan?.agents?.[0];
+    const agent = selectedLan?.agents?.find((a: any) => a.is_agent_active);
+    if (!agent) {
+      showToast('Không có Agent online để thực thi lệnh', 'error');
+      return;
+    }
     const currentIp = agent?.local_ip || agent?.ip || "";
     if (!currentIp) {
       showToast('Không tìm thấy IP của Agent để cập nhật', 'error');
@@ -410,7 +414,7 @@ export function CopierItem({
                               <button
                                 style={{ ...styles.smallBtn, flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '8px 12px', display: 'flex', alignItems: 'center' }}
                                 onClick={() => {
-                                  setPublicFtpData({ printerId: p.id, name: '', email: '', agentUid: selectedAgentUid });
+                                  setPublicFtpData({ printerId: p.mac_id || p.mac_address, printerObj: p, name: '', email: '', agentUid: selectedAgentUid });
                                   setActiveModal('public_ftp');
                                 }}
                                 disabled={onlineAgents.length === 0}

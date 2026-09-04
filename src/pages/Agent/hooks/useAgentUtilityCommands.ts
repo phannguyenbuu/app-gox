@@ -437,46 +437,12 @@ export const useAgentUtilityCommands = (deps: any = {}) => {
     setUtilityActionPending(command);
     setUtilityStatusMsg({ text: '⌛ Đang gửi lệnh thực thi tới Agent...', isError: false });
 
-    // ── Nếu là force_subnet_scan: lấy IP Agent mới trước, rồi xóa DB cũ ────────
+    // ── Nếu là force_subnet_scan: xóa DB cũ trước để kết quả hoàn toàn sạch ──
     if (command === 'force_subnet_scan') {
       const lanUid = targetAgent?.lan_uid || selectedUtilityAgent?.lan_uid || 'default';
-      // Xóa DB cũ (fire-and-forget)
       purgeLanPrinters(lanUid).catch(err =>
         console.warn('[handleTriggerUtilityExec] purgeLanPrinters error (non-fatal):', err)
       );
-      // Lấy IP mới nhất của Agent, cập nhật UI ngay (không cache, không chờ fetchLanSitesData)
-      triggerAgentUtilityExec(targetAgent.agent_uid, 'get_agent_ip', '')
-        .then(async (ipRes: any) => {
-          if (!ipRes.ok || !ipRes.command_id) return;
-          const cmdId = ipRes.command_id;
-          const start = Date.now();
-          await new Promise<void>(resolve => {
-            const t = setInterval(async () => {
-              try {
-                if (Date.now() - start > 10_000) { clearInterval(t); resolve(); return; }
-                const s = await getCommandStatus(cmdId);
-                if (s.status === 'success' || s.status === 'failed') {
-                  clearInterval(t);
-                  if (s.status === 'success' && deps.setLanSites) {
-                    const raw = String(s.result_payload || s.output || s.result || '');
-                    const m = raw.match(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/);
-                    const newIp = m ? m[1] : '';
-                    if (newIp) {
-                      deps.setLanSites((prev: any[]) => prev.map((site: any) => ({
-                        ...site,
-                        agents: (site.agents || []).map((ag: any) =>
-                          ag.agent_uid === targetAgent.agent_uid ? { ...ag, local_ip: newIp } : ag
-                        )
-                      })));
-                    }
-                  }
-                  resolve();
-                }
-              } catch { clearInterval(t); resolve(); }
-            }, 800);
-          });
-        })
-        .catch(err => console.warn('[handleTriggerUtilityExec] get_agent_ip error:', err));
     }
 
     try {

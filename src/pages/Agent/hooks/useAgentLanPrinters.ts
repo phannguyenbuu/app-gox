@@ -1,9 +1,9 @@
 // @ts-nocheck
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { fetchApi, getCommandStatus, getLanSites, purgeLanPrinters, saveCopierCredentials, triggerAgentUtilityExec } from '../../../api/mockAgentApi';
+import { fetchApi, getLanSites, purgeLanPrinters, saveCopierCredentials, triggerAgentUtilityExec } from '../../../api/mockAgentApi';
 
 export const useAgentLanPrinters = (deps: any = {}) => {
-  const { showToast, pollCommandStatus, utilityCommands, activeTab } = deps;
+  const { showToast, pollCommandStatus, utilityCommands } = deps;
 
   const [lanSites, setLanSites] = useState<any[]>([]);
   const [selectedPublicIp, setSelectedPublicIp] = useState<string>(() => {
@@ -148,7 +148,11 @@ export const useAgentLanPrinters = (deps: any = {}) => {
             // IP user nhập nhưng không match site nào — giữ IP làm LAN UID tạm
             return activeIp;
           }
-          // Fix C: bỏ "keep prev" — luôn auto-pick site tốt nhất từ data mới
+          // Chỉ auto-pick khi chỉ có đúng 1 site — nhiều site cần user chọn tay
+          if (rows.length === 1) {
+            localStorage.setItem('goxprint_selected_lan_uid', rows[0].lan_uid);
+            return rows[0].lan_uid;
+          }
           const siteWithPrinters = rows.find((s: any) => (s.printers && s.printers.length > 0) || (s.agents && s.agents.length > 0));
           const bestUid = siteWithPrinters ? siteWithPrinters.lan_uid : rows[0].lan_uid;
           localStorage.setItem('goxprint_selected_lan_uid', bestUid);
@@ -169,7 +173,7 @@ export const useAgentLanPrinters = (deps: any = {}) => {
     fetchLanSitesData();
   }, [fetchLanSitesData]);
 
-  // Auto-refresh mỗi 60 giây — đảm bảo local_ip, trạng thái Agent, dữ liệu máy in
+  // Auto-refresh mỗi 60 giây — backend đã tự detect IP change, frontend chỉ cần đọc lại DB
   // luôn cập nhật mà không cần user thao tác thủ công
   useEffect(() => {
     const interval = setInterval(() => {
@@ -231,142 +235,78 @@ export const useAgentLanPrinters = (deps: any = {}) => {
       if (siteByUid) return siteByUid;
     }
     const siteWithPrinters = lanSites.find((site: any) => (site.printers && site.printers.length > 0) || (site.agents && site.agents.length > 0));
-    return siteWithPrinters || lanSites[0];
+    // Chỉ auto-pick khi chỉ có 1 site — nhiều site yêu cầu user chọn tay
+    return lanSites.length === 1 ? (siteWithPrinters || lanSites[0]) : (siteWithPrinters || null);
   }, [lanSites, selectedPublicIp, selectedLanUid]);
-
-
-  // Helper: lấy IP của agent và cập nhật ngay vào lanSites state (không cache)
-  const fetchAndApplyAgentIp = useCallback(async (agentUid: string) => {
-    try {
-      const res = await triggerAgentUtilityExec(agentUid, 'get_agent_ip', '');
-      if (!res.ok || !res.command_id) return;
-      const cmdId = res.command_id;
-      const start = Date.now();
-      await new Promise<void>(resolve => {
-        const timer = setInterval(async () => {
-          try {
-            if (Date.now() - start > 10_000) { clearInterval(timer); resolve(); return; }
-            const status = await getCommandStatus(cmdId);
-            if (status.status === 'success' || status.status === 'failed') {
-              clearInterval(timer);
-              if (status.status === 'success') {
-                const raw = typeof status.result_payload === 'string'
-                  ? status.result_payload
-                  : JSON.stringify(status.result_payload || status.output || status.result || status);
-                const matches = raw.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g);
-                const newIp = matches ? (matches.find(ip => !ip.startsWith('127.') && ip !== '0.0.0.0') || matches[0]) : '';
-                if (newIp) {
-                  // Cập nhật UI ngay — gán lại giá trị cho IP cục bộ
-                  setLanSites((prev: any[]) => prev.map((site: any) => ({
-                    ...site,
-                    agents: (site.agents || []).map((ag: any) =>
-                      ag.agent_uid === agentUid ? { ...ag, local_ip: newIp } : ag
-                    )
-                  })));
-                }
-              }
-              resolve();
-            }
-          } catch { clearInterval(timer); resolve(); }
-        }, 800);
-      });
-    } catch (err) {
-      console.warn('[fetchAndApplyAgentIp] error:', err);
-    }
-  }, [setLanSites]);
-
-  // Ref giữ selectedLan mới nhất để tránh restart polling interval khi state thay đổi
-  const selectedLanRef = useRef(selectedLan);
-  useEffect(() => {
-    selectedLanRef.current = selectedLan;
-  }, [selectedLan]);
-
-  const activePollingAgentsRef = useRef<Set<string>>(new Set());
-
-  // Polling 5s: Khi tab "Máy tính" (activeTab === 'agents') đang active,
-  // tự động chạy get_agent_ip cho các agent đang hoạt động và gán lại giá trị cho IP cục bộ.
-  useEffect(() => {
-    if (activeTab !== 'agents') return;
-
-    let isMounted = true;
-
-    const pollAllActiveAgents = async () => {
-      if (!isMounted) return;
-      const currentAgents = selectedLanRef.current?.agents || [];
-      const activeAgents = currentAgents.filter((a: any) => a.is_agent_active && a.agent_uid);
-
-      for (const ag of activeAgents) {
-        if (!isMounted) break;
-        const uid = ag.agent_uid;
-        if (activePollingAgentsRef.current.has(uid)) continue;
-
-        activePollingAgentsRef.current.add(uid);
-        fetchAndApplyAgentIp(uid).finally(() => {
-          activePollingAgentsRef.current.delete(uid);
-        });
-      }
-    };
-
-    // Chạy 1 lần ngay khi vào tab Máy tính
-    pollAllActiveAgents();
-
-    // Lặp lại định kỳ mỗi 5 giây
-    const interval = setInterval(pollAllActiveAgents, 5000);
-
-    return () => {
-      isMounted = false;
-      clearInterval(interval);
-    };
-  }, [activeTab, fetchAndApplyAgentIp]);
 
   const triggerLanScan = useCallback((lanData: any, isManual = true) => {
     if (!lanData) return;
     const currentLanUid = lanData.lan_uid;
     const now = Date.now();
 
-    if (isManual || !autoScanTriggers.current[currentLanUid] || now - autoScanTriggers.current[currentLanUid] > 30 * 1000) {
-      autoScanTriggers.current[currentLanUid] = now;
+    // ── Chặn bấm liên tục khi lệnh quét đang chạy ──────────────────────────
+    const isScanPending = deps.commandStatus?.[`scan_lan_${currentLanUid}`]?.isPending;
+    if (isScanPending) {
+      showToast('Đang quét mạng LAN, vui lòng chờ lệnh hiện tại hoàn tất...', 'warning', 3000);
+      return;
+    }
 
-      // ── Xóa sạch Printer + DeviceInfor cũ trên VPS trước khi quét ───────────
-      // Fire-and-forget: không block scan, lỗi không ảnh hưởng UX
-      purgeLanPrinters(currentLanUid).catch(err =>
-        console.warn('[triggerLanScan] purgeLanPrinters error (non-fatal):', err)
-      );
+    // ── Cooldown: tối thiểu 10s cho bấm tay, 30s cho auto-scan ────────────
+    const lastScan = autoScanTriggers.current[currentLanUid] || 0;
+    if (isManual && now - lastScan < 10 * 1000) {
+      showToast('Vui lòng chờ ít nhất 10 giây giữa các lần quét mạng LAN.', 'warning', 2500);
+      return;
+    }
+    if (!isManual && now - lastScan < 30 * 1000) {
+      return;
+    }
 
-      const activeAgentsList = (lanData.agents || []).filter((a: any) => a.is_agent_active);
-      if (activeAgentsList.length > 0) {
-        activeAgentsList.sort((a: any, b: any) => {
-          const tA = new Date(a.last_seen || a.updated_at || a.last_ping || 0).getTime();
-          const tB = new Date(b.last_seen || b.updated_at || b.last_ping || 0).getTime();
-          return tB - tA;
-        });
+    autoScanTriggers.current[currentLanUid] = now;
 
-        const targetAgent = activeAgentsList[0];
-        if (targetAgent && pollCommandStatus) {
-          showToast('Quét mạng LAN...', 'info', 3000);
-          deps.setCommandStatus?.((prev: any) => ({
-            ...prev,
-            [`scan_lan_${currentLanUid}`]: { message: '⏳ Quét mạng LAN...', isPending: true }
-          }));
-          const a = targetAgent;
+    // ── Kiểm tra Agent trực thuộc LAN (TUYỆT ĐỐI KHÔNG FALLBACK sang LAN khác) ──
+    const activeAgentsList = (lanData.agents || []).filter((a: any) => a.is_agent_active);
+    if (!activeAgentsList || activeAgentsList.length === 0) {
+      showToast(`Không có Agent nào trực thuộc mạng LAN ${currentLanUid} đang hoạt động để thực hiện quét!`, 'error', 4000);
+      return;
+    }
 
-          // ── Bước 0: Lấy IP mới nhất của Agent, cập nhật UI ngay (không cache) ─
-          // get_agent_ip xử lý trước force_subnet_scan (FIFO queue Agent)
-          fetchAndApplyAgentIp(a.agent_uid);
+    // ── Xóa sạch Printer + DeviceInfor cũ trên VPS trước khi quét ───────────
+    // Fire-and-forget: không block scan, lỗi không ảnh hưởng UX
+    purgeLanPrinters(currentLanUid).catch(err =>
+      console.warn('[triggerLanScan] purgeLanPrinters error (non-fatal):', err)
+    );
 
-          const payload = {
-            command: 'force_subnet_scan',
-            lead: lanData.lead
-          };
-          fetchApi(`/api/agents/${a.agent_uid}/utility/exec?lead=default`, {
-            method: 'POST',
-            body: JSON.stringify(payload)
-          })
-          .then(data => {
-            const cmdId = data?.command_id || data?.id;
-            if (cmdId) {
-              pollCommandStatus(
-                Number(cmdId),
+    activeAgentsList.sort((a: any, b: any) => {
+      const tA = new Date(a.last_seen || a.updated_at || a.last_ping || 0).getTime();
+      const tB = new Date(b.last_seen || b.updated_at || b.last_ping || 0).getTime();
+      return tB - tA;
+    });
+
+    const targetAgent = activeAgentsList[0];
+    if (targetAgent && pollCommandStatus) {
+      showToast('Quét mạng LAN...', 'info', 3000);
+      deps.setCommandStatus?.((prev: any) => ({
+        ...prev,
+        [`scan_lan_${currentLanUid}`]: { message: '⏳ Quét mạng LAN...', isPending: true }
+      }));
+      const a = targetAgent;
+
+      const payload = {
+        command: 'force_subnet_scan',
+        lead: lanData.lead
+      };
+      fetchApi(`/api/agents/${a.agent_uid}/utility/exec?lead=default`, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      })
+      .then(data => {
+        const cmdId = data?.command_id || data?.id;
+        if (cmdId) {
+          if (data?.skipped) {
+            showToast(data.message || 'Lệnh quét mạng đang được Agent thực thi...', 'info', 3000);
+          }
+          pollCommandStatus(
+            Number(cmdId),
                 `scan_lan_${currentLanUid}`,
                 async (pollData: any) => {
                   console.log("🔍 [PRINTAGENT RESULT] Kết quả force_subnet_scan:", pollData);
@@ -433,10 +373,8 @@ export const useAgentLanPrinters = (deps: any = {}) => {
           .catch(e => {
             console.error(e);
           });
-        }
       }
-    }
-  }, [showToast, pollCommandStatus, utilityCommands, fetchAndApplyAgentIp]);
+  }, [showToast, pollCommandStatus, utilityCommands]);
 
   const filteredPrinters = useMemo(() => {
     if (!selectedLan) return [];
@@ -674,7 +612,6 @@ export const useAgentLanPrinters = (deps: any = {}) => {
     selectedTargetAgents, setSelectedTargetAgents, getTargetAgentUid, handleCopierClick,
     accessDeniedState, setAccessDeniedState,
     liveAddressBooks, setLiveAddressBooks,
-    fetchAndApplyAgentIp,
     myClientIp
   };
 };
