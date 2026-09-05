@@ -10,6 +10,8 @@ export function LoginPage() {
   const login = useAuthStore((s) => s.login);
 
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -18,7 +20,7 @@ export function LoginPage() {
     setError('');
     setLoading(true);
     try {
-      const result = await login(email);
+      const result = await login(email, password);
       if (result.success) {
         navigate('/dashboard', { replace: true });
       } else {
@@ -71,7 +73,37 @@ export function LoginPage() {
               autoComplete="email"
               disabled={loading}
               autoFocus
+              required
             />
+          </div>
+
+          <div style={styles.field}>
+            <label htmlFor="password" style={styles.label}>
+              Mật khẩu <span style={{ color: 'var(--color-error)' }}>*</span>
+            </label>
+            <div style={styles.passwordWrapper}>
+              <input
+                id="password"
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Nhập mật khẩu"
+                style={{ ...styles.input, paddingRight: 44 }}
+                autoComplete="current-password"
+                disabled={loading}
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                style={styles.eyeBtn}
+                disabled={loading}
+                aria-label={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                tabIndex={-1}
+              >
+                {showPassword ? '🙈' : '👁'}
+              </button>
+            </div>
           </div>
 
           {error && (
@@ -90,7 +122,7 @@ export function LoginPage() {
                 <LoadingSpinner size="sm" />
               </div>
             ) : (
-              <AnimatedButton disabled={!email.trim()}>Đăng nhập</AnimatedButton>
+              <AnimatedButton disabled={!email.trim() || !password}>Đăng nhập</AnimatedButton>
             )}
           </div>
         </form>

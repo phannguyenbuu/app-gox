@@ -72,7 +72,7 @@ export function mockGetUserPhone(_userId: string): string | undefined {
 }
 
 
-export async function apiIncidentsByEmail(email: string): Promise<{
+export async function apiIncidentsByEmail(email: string, token: string): Promise<{
   success: boolean;
   message: string;
   profile: any | null;
@@ -85,6 +85,7 @@ export async function apiIncidentsByEmail(email: string): Promise<{
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({ email, page: 1, per_page: 200 }),
   });
@@ -113,7 +114,7 @@ export async function apiIncidentUpdateStatus(payload: {
   completed_at?: string;
   completion_note?: string;
   labor_cost?: number;
-}): Promise<{
+}, token: string): Promise<{
   success: boolean;
   message: string;
   task: any | null;
@@ -131,6 +132,7 @@ export async function apiIncidentUpdateStatus(payload: {
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(payload),
     });
@@ -195,7 +197,7 @@ export async function apiIncidentAddNote(payload: {
   task_id: string;
   note: string;
   images?: string[];
-}): Promise<{
+}, token: string): Promise<{
   success: boolean;
   message: string;
   note?: any | null;
@@ -207,6 +209,7 @@ export async function apiIncidentAddNote(payload: {
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify(payload),
   });
@@ -259,7 +262,7 @@ export async function apiIncidentAddMaterial(payload: {
   unit: string;
   note?: string;
   unit_price?: number;
-}): Promise<{
+}, token: string): Promise<{
   success: boolean;
   message: string;
   material?: any | null;
@@ -271,6 +274,7 @@ export async function apiIncidentAddMaterial(payload: {
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify(payload),
   });
@@ -461,7 +465,7 @@ function mapIncidentTaskToRequest(task: any, workspace: any | null, profile: any
 
 
 
-export async function apiProfileByEmail(email: string): Promise<{
+export async function apiProfileByEmail(email: string, token: string): Promise<{
   success: boolean;
   message: string;
   profile: any | null;
@@ -471,16 +475,95 @@ export async function apiProfileByEmail(email: string): Promise<{
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify({ email }),
   });
 
   const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.message || data.error || `HTTP error! status: ${res.status}`);
+  }
   return {
     success: Boolean(data?.success),
     message: String(data?.message || ''),
     profile: data?.profile ?? null,
   };
+}
+
+// Đăng nhập thật qua quanlymay: xác thực email + mật khẩu phía server, trả về JWT.
+export async function apiLogin(email: string, password: string): Promise<{
+  success: boolean;
+  message: string;
+  token: string | null;
+  expiresIn: number | null;
+}> {
+  let res: Response;
+  try {
+    res = await fetch(`${PUBLIC_BASE_URL}/api/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ email, password }),
+    });
+  } catch {
+    return { success: false, message: 'Không thể kết nối tới máy chủ. Vui lòng thử lại.', token: null, expiresIn: null };
+  }
+
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok || !data?.data?.access_token) {
+    return {
+      success: false,
+      message: String(data?.message || 'Email hoặc mật khẩu không đúng'),
+      token: null,
+      expiresIn: null,
+    };
+  }
+
+  return {
+    success: true,
+    message: String(data?.message || ''),
+    token: String(data.data.access_token),
+    expiresIn: typeof data.data.expires_in === 'number' ? data.data.expires_in : null,
+  };
+}
+
+// Lấy thông tin người dùng hiện tại từ JWT vừa cấp — dùng để dựng session và để
+// xác nhận token còn hợp lệ (server-side), thay vì tin tưởng dữ liệu client tự tạo.
+export async function apiMe(token: string): Promise<{ success: boolean; profile: any | null }> {
+  let res: Response;
+  try {
+    res = await fetch(`${PUBLIC_BASE_URL}/api/me?encrypted=false`, {
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+    });
+  } catch {
+    return { success: false, profile: null };
+  }
+
+  if (!res.ok) return { success: false, profile: null };
+  const data = await res.json().catch(() => ({}));
+  return { success: true, profile: data?.data ?? null };
+}
+
+// Thu hồi token phía server (blacklist) khi đăng xuất — best-effort, không chặn UI logout.
+export async function apiLogout(token: string): Promise<void> {
+  try {
+    await fetch(`${PUBLIC_BASE_URL}/api/logout`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+    });
+  } catch {
+    // Bỏ qua lỗi mạng: phiên vẫn được xoá ở client, token sẽ tự hết hạn theo TTL của server.
+  }
 }
 
 export async function mockLogin(
@@ -608,11 +691,12 @@ export async function mockChangePassword(
 export async function mockGetRequests(
   filters?: RepairRequestFilters,
   email?: string,
+  token?: string,
 ): Promise<RepairRequest[]> {
-  if (email) {
+  if (email && token) {
     // Đảm bảo cache mac_id → địa điểm đã được tải
     await ensureMacLocationCache();
-    const data = await apiIncidentsByEmail(email);
+    const data = await apiIncidentsByEmail(email, token);
     let requests = data.tasks.map((task: any) => mapIncidentTaskToRequest(task, data.workspace, data.profile));
 
     if (filters?.status) {

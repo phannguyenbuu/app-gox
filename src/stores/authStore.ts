@@ -1,10 +1,10 @@
 import { create } from 'zustand';
 import type { User, LoginResult } from '../types/auth';
-import { mockRegister, mockLoginWithGoogle, mockChangePassword, apiProfileByEmail } from '../api/mockApi';
+import { mockRegister, mockLoginWithGoogle, mockChangePassword, apiLogin, apiMe, apiLogout } from '../api/mockApi';
 import { useWorkspaceStore } from './workspaceStore';
 
 const AUTH_SESSION_KEY = 'auth_session';
-const SESSION_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
+const FALLBACK_SESSION_DURATION_MS = 60 * 60 * 1000; // dùng khi server không trả expires_in
 
 interface AuthSession {
   token: string;
@@ -16,7 +16,7 @@ interface AuthStore {
   user: User | null;
   token: string | null;
   isAuthenticated: boolean;
-  login: (email: string, password?: string) => Promise<LoginResult>;
+  login: (email: string, password: string) => Promise<LoginResult>;
   register: (email: string, password: string, fullName: string, phoneNumber?: string, address?: string) => Promise<LoginResult>;
   loginWithGoogle: (email: string) => Promise<LoginResult>;
   logout: () => void;
@@ -25,7 +25,8 @@ interface AuthStore {
   changePassword: (currentPassword: string, newPassword: string) => Promise<{ success: boolean; error?: string }>;
 }
 
-function mapProfileToUser(profile: any, fallbackEmail: string): User {
+// /api/me của quanlymay trả về id/name/email/role/active_company_id/workspaces[].
+function mapMeToUser(profile: any, fallbackEmail: string): User {
   const email = String(profile?.email || fallbackEmail).trim();
   const fullName = String(profile?.name || '').trim() || email.split('@')[0] || email;
   const roleRaw = String(profile?.role || 'user');
@@ -34,7 +35,9 @@ function mapProfileToUser(profile: any, fallbackEmail: string): User {
       ? roleRaw
       : 'user';
 
-  const workspaceName = String(profile?.workspace_name || '').trim();
+  const workspaces: any[] = Array.isArray(profile?.workspaces) ? profile.workspaces : [];
+  const activeCompanyId = profile?.active_company_id != null ? String(profile.active_company_id) : undefined;
+  const activeWorkspace = workspaces.find((w) => String(w?.company_id) === activeCompanyId);
 
   return {
     id: String(profile?.id ?? email),
@@ -43,11 +46,10 @@ function mapProfileToUser(profile: any, fallbackEmail: string): User {
     fullName,
     role,
     locationIds: [],
-    phone: profile?.phone ? String(profile.phone) : undefined,
-    companyId: profile?.company_tax_id ? String(profile.company_tax_id) : undefined,
-    companyName: workspaceName || undefined,
-    workspaceIds: [],
-    joinedAt: profile?.created_at ? String(profile.created_at) : undefined,
+    phone: undefined,
+    companyId: activeCompanyId,
+    companyName: activeWorkspace?.company_name ? String(activeWorkspace.company_name) : undefined,
+    workspaceIds: workspaces.map((w) => String(w?.company_id)).filter(Boolean),
   };
 }
 
@@ -56,12 +58,8 @@ function generateToken(userId: string): string {
   return btoa(payload);
 }
 
-function saveSession(token: string, user: User): void {
-  const session: AuthSession = {
-    token,
-    user,
-    expiresAt: Date.now() + SESSION_DURATION_MS,
-  };
+function saveSession(token: string, user: User, expiresAt: number): void {
+  const session: AuthSession = { token, user, expiresAt };
   localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(session));
 }
 
@@ -84,20 +82,26 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   token: null,
   isAuthenticated: false,
 
-  login: async (email: string, _password?: string): Promise<LoginResult> => {
+  login: async (email: string, password: string): Promise<LoginResult> => {
     const trimmed = email.trim();
     if (!trimmed) return { success: false, error: 'Vui lòng nhập email' };
+    if (!password) return { success: false, error: 'Vui lòng nhập mật khẩu' };
 
     try {
-      const res = await apiProfileByEmail(trimmed);
-      if (!res.success || !res.profile) {
-        return { success: false, error: res.message || 'Email không tồn tại trong hệ thống' };
+      const loginRes = await apiLogin(trimmed, password);
+      if (!loginRes.success || !loginRes.token) {
+        return { success: false, error: loginRes.message || 'Email hoặc mật khẩu không đúng' };
       }
 
-      const user = mapProfileToUser(res.profile, trimmed);
-      const token = generateToken(user.id);
-      saveSession(token, user);
-      set({ user, token, isAuthenticated: true });
+      const meRes = await apiMe(loginRes.token);
+      if (!meRes.success || !meRes.profile) {
+        return { success: false, error: 'Đăng nhập thành công nhưng không lấy được thông tin tài khoản. Vui lòng thử lại.' };
+      }
+
+      const user = mapMeToUser(meRes.profile, trimmed);
+      const expiresAt = Date.now() + (loginRes.expiresIn ?? FALLBACK_SESSION_DURATION_MS / 1000) * 1000;
+      saveSession(loginRes.token, user, expiresAt);
+      set({ user, token: loginRes.token, isAuthenticated: true });
       return { success: true, user };
     } catch (err: any) {
       return { success: false, error: err?.message || 'Đã xảy ra lỗi. Vui lòng thử lại.' };
@@ -108,7 +112,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     const result = await mockRegister(email, password, fullName, phoneNumber, address);
     if (result.success) {
       const token = generateToken(result.user.id);
-      saveSession(token, result.user);
+      saveSession(token, result.user, Date.now() + FALLBACK_SESSION_DURATION_MS);
       set({ user: result.user, token, isAuthenticated: true });
     }
     return result;
@@ -118,13 +122,15 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     const result = await mockLoginWithGoogle(email);
     if (result.success) {
       const token = generateToken(result.user.id);
-      saveSession(token, result.user);
+      saveSession(token, result.user, Date.now() + FALLBACK_SESSION_DURATION_MS);
       set({ user: result.user, token, isAuthenticated: true });
     }
     return result;
   },
 
   logout: () => {
+    const token = get().token;
+    if (token) void apiLogout(token);
     clearSession();
     useWorkspaceStore.getState().clear();
     set({ user: null, token: null, isAuthenticated: false });
@@ -148,7 +154,9 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     set((state) => {
       if (!state.user || !state.token) return state;
       const updated = { ...state.user, ...data };
-      saveSession(state.token, updated);
+      const existing = loadSession();
+      const expiresAt = existing?.expiresAt ?? Date.now() + FALLBACK_SESSION_DURATION_MS;
+      saveSession(state.token, updated, expiresAt);
       return { user: updated };
     });
   },

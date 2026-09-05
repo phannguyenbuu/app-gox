@@ -78,8 +78,10 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
     set({ loading: true, error: null });
     try {
       const activeFilters = filters ?? get().filters;
-      const email = useAuthStore.getState().user?.email;
-      const requests = await mockGetRequests(activeFilters, email);
+      const authState = useAuthStore.getState();
+      const email = authState.user?.email ?? undefined;
+      const token = authState.token ?? undefined;
+      const requests = await mockGetRequests(activeFilters, email, token);
       set({ requests, loading: false });
     } catch (e: any) {
       set({ error: e.message ?? 'Lỗi khi tải danh sách yêu cầu', loading: false });
@@ -130,10 +132,12 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
 
     set({ loading: true, error: null });
     try {
-      const email = useAuthStore.getState().user?.email;
+      const authState = useAuthStore.getState();
+      const email = authState.user?.email;
+      const token = authState.token;
       let updated = result.request;
 
-      if (email && (newStatus === 'accepted' || newStatus === 'in_progress' || newStatus === 'completed')) {
+      if (email && token && (newStatus === 'accepted' || newStatus === 'in_progress' || newStatus === 'completed')) {
         const now = new Date().toISOString();
         const statusSlug =
           newStatus === 'accepted' ? 'selected'
@@ -153,7 +157,7 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
           note,
           join_repair: newStatus === 'accepted' ? true : undefined,
           completed_at: newStatus === 'completed' ? now : undefined,
-        });
+        }, token);
 
         updated = {
           ...updated,
@@ -207,17 +211,19 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
 
     set({ loading: true, error: null });
     try {
-      const email = useAuthStore.getState().user?.email;
+      const authState = useAuthStore.getState();
+      const email = authState.user?.email;
+      const token = authState.token;
       const now = new Date().toISOString();
       let updated = request;
 
-      if (email) {
+      if (email && token) {
         await apiIncidentAddNote({
           email,
           task_id: String(requestId),
           note,
           images,
-        });
+        }, token);
 
         const progressNote = {
           id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -271,11 +277,13 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
 
     set({ loading: true, error: null });
     try {
-      const email = useAuthStore.getState().user?.email;
+      const authState = useAuthStore.getState();
+      const email = authState.user?.email;
+      const token = authState.token;
       const now = new Date().toISOString();
       let updated = result.request;
 
-      if (email) {
+      if (email && token) {
         await apiIncidentUpdateStatus({
           email,
           task_id: String(requestId),
@@ -283,7 +291,7 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
           completion_note: report.description,
           labor_cost: report.laborCost,
           completed_at: now,
-        });
+        }, token);
         updated = { ...updated, completedAt: now, updatedAt: now };
       } else {
         updated = await mockUpdateStatus(requestId, 'completed', {
