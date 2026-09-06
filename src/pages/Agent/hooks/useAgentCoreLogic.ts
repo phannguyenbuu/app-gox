@@ -114,6 +114,7 @@ export const useAgentCoreLogic = (deps: any = {}) => {
   const [privateFtpLoading, setPrivateFtpLoading] = useState(false);
 
   const [ftpDetailData, setFtpDetailData] = useState<any>(null);
+  const [emailFileCounts, setEmailFileCounts] = useState<Record<string, number>>({});
 
   // Dùng ref để break circular dependency:
   // lanPrinters cần pollCommandStatus từ utility, nhưng utility được khai báo sau lanPrinters
@@ -176,6 +177,8 @@ export const useAgentCoreLogic = (deps: any = {}) => {
     setPrivateFtpData,
     privateFtpLoading,
     setPrivateFtpLoading,
+    emailFileCounts,
+    setEmailFileCounts,
     getDestinationStatus: () => ({ label: '✔ ACTIVE', type: 'success', title: '' }),
     getDestinationStatusHtml: () => ({ label: '✔ ACTIVE', type: 'success', title: '' }),
 

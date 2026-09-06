@@ -29,7 +29,7 @@ export const styles: Record<string, React.CSSProperties> = {
     borderBottom: '1px solid var(--color-surface-light)',
   },
   scrollableContent: {
-    marginTop: '176px', // Offsets the height of fixedHeader
+    marginTop: '230px', // Offsets the height of fixedHeader
     padding: '12px 14px',
     display: 'flex',
     flexDirection: 'column',

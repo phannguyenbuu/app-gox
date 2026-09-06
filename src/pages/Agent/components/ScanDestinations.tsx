@@ -10,9 +10,9 @@ export interface ScanDestinationsProps {
   getDestinationStatus: (entry: any) => any;
   selectedLan: any;
   handleOpenStorageFiles: (lanUid: string, destVal: string) => void;
-  handleDeleteDest: (pId: string, entry: any) => void;
+  handleDeleteDest: (pTarget: any, entry: any) => void;
   handleChangeFtp?: (printer: any, entry: any) => void;
-  handleEditIP?: (pId: string, entry: any) => void;
+  handleEditIP?: (pTarget: any, entry: any) => void;
 }
 
 export function ScanDestinations({
@@ -37,6 +37,10 @@ export function ScanDestinations({
       })
     : [];
 
+  const pMac = String(p?.mac_address || p?.mac_id || '').toUpperCase().replace(/-/g, ':');
+  const pIp = String(p?.ip || p?.printer_ip || '').trim();
+  const printerKey = pMac || pIp || String(p?.id || '0');
+
   return (
     <div style={styles.destinationsBlock}>
       <span style={styles.destBlockTitle}>📂 Danh sách điểm scan:</span>
@@ -54,8 +58,12 @@ export function ScanDestinations({
 
           const statusInfo = typeof getDestinationStatus === 'function' ? getDestinationStatus(entry) : { label: '✔ ACTIVE', type: 'success', title: '' };
           const regNo = (entry.registration_no && entry.registration_no !== '-') ? entry.registration_no : (entry.entry_id || (eIdx + 1));
-          const rowKey = `${p.id}-${regNo}`;
-          const isRowPending = commandStatus[rowKey]?.isPending || false;
+          const rowKey = `${printerKey}-${regNo}`;
+          const isRowPending = Boolean(
+            commandStatus[rowKey]?.isPending || 
+            (p?.id && commandStatus[`${p.id}-${regNo}`]?.isPending) ||
+            (pMac && commandStatus[`${pMac}-${regNo}`]?.isPending)
+          );
 
           return (
             <div key={eIdx} style={{ ...styles.destItemCard, flexDirection: 'row', alignItems: 'center', gap: '12px', flexWrap: 'nowrap', overflow: 'hidden' }}>
@@ -120,7 +128,7 @@ export function ScanDestinations({
                     opacity: isRowPending ? 0.5 : 1,
                     minWidth: '24px'
                   }}
-                  onClick={() => handleEditIP && handleEditIP(p.id, entry)}
+                  onClick={() => handleEditIP && handleEditIP(p, entry)}
                   disabled={isRowPending}
                   title="Thay đổi FTP (Cập nhật IP)"
                 >
@@ -145,7 +153,7 @@ export function ScanDestinations({
                   opacity: isRowPending ? 0.5 : 1,
                   minWidth: '24px'
                 }}
-                onClick={() => handleDeleteDest(p.id || p.mac_id || p.mac_address || p.ip || '0', entry)}
+                onClick={() => handleDeleteDest(p, entry)}
                 disabled={isRowPending}
                 title="Xóa"
               >
