@@ -250,7 +250,7 @@ export function AgentsTab(props: any) {
                                   background: isOnline ? 'rgba(0, 255, 136, 0.08)' : 'rgba(255, 68, 102, 0.08)',
                                 }}
                               >
-                                {isOnline ? (agent.is_master ? '★ MASTER' : '● ONLINE') : '● OFFLINE'}
+                                {isOnline ? '● ONLINE' : '● OFFLINE'}
                               </span>
                             </div>
                           </div>
