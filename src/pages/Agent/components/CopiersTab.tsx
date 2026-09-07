@@ -141,19 +141,35 @@ export function CopiersTab(props: any) {
           <div style={{ fontSize: '0.9rem', color: 'var(--color-text-secondary)' }}>
             Quản lý danh sách máy photocopy & danh bạ scan
           </div>
-          <div style={{
-            fontSize: '0.85rem',
-            color: '#10b981',
-            backgroundColor: 'rgba(16, 185, 129, 0.1)',
-            padding: '6px 12px',
-            borderRadius: '20px',
-            border: '1px solid rgba(16, 185, 129, 0.2)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '6px'
-          }}>
-            <span>● Tất cả máy photocopy đều được quản lý tự động qua Agent</span>
-          </div>
+          {selectedLan ? (
+            <div style={{
+              fontSize: '0.85rem',
+              color: '#10b981',
+              backgroundColor: 'rgba(16, 185, 129, 0.1)',
+              padding: '6px 12px',
+              borderRadius: '20px',
+              border: '1px solid rgba(16, 185, 129, 0.2)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px'
+            }}>
+              <span>● Tất cả máy photocopy đều được quản lý tự động qua Agent</span>
+            </div>
+          ) : (
+            <div style={{
+              fontSize: '0.85rem',
+              color: '#ef4444',
+              backgroundColor: 'rgba(239, 68, 68, 0.1)',
+              padding: '6px 12px',
+              borderRadius: '20px',
+              border: '1px solid rgba(239, 68, 68, 0.2)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px'
+            }}>
+              <span>● Chưa kết nối mạng LAN</span>
+            </div>
+          )}
         </div>
 
         <AnimatedList
@@ -172,19 +188,28 @@ export function CopiersTab(props: any) {
             </div>
           ) : filteredPrinters.length === 0 ? (
             <div style={styles.emptyStateContainer} key={`empty_${targetInternalIp || 'all'}`}>
-              <div style={styles.emptyIcon}>🖨️</div>
+              <div style={styles.emptyIcon}>{!selectedLan ? '📡' : '🖨️'}</div>
               <div style={styles.emptyTitle}>
-                {targetInternalIp ? `Không tìm thấy máy photo có IP: ${targetInternalIp}` : 'Chưa có danh sách máy in, hãy nhấn nút khởi tạo'}
+                {targetInternalIp
+                  ? `Không tìm thấy máy photo có IP: ${targetInternalIp}`
+                  : (!selectedLan
+                      ? 'Không có mạng LAN'
+                      : 'Chưa có danh sách máy in, hãy nhấn nút khởi tạo')}
               </div>
               <div style={styles.emptySubtitle}>
                 {targetInternalIp
                   ? `Không tìm thấy thiết bị nào khớp với IP nội bộ ${targetInternalIp} trong mạng LAN này.`
-                  : 'Vui lòng chọn mạng LAN khác hoặc nhấp nút khởi tạo / Dò quét mạng LAN để tìm kiếm thiết bị.'}
+                  : (!selectedLan
+                      ? 'IP hiện tại không thuộc mạng LAN nào có Agent hoạt động. Vui lòng nhập IP Public để kết nối.'
+                      : 'Vui lòng chọn mạng LAN khác hoặc nhấp nút khởi tạo / Dò quét mạng LAN để tìm kiếm thiết bị.')}
               </div>
             </div>
           ) : (
             filteredPrinters.map((p: any) => {
-              const isExpanded = String(expandedCopierId) === String(p.id);
+              const pMac = (p.mac_address || p.mac_id || '').toUpperCase().replace(/-/g, ':');
+              const pIdKey = p.id !== undefined && p.id !== null ? String(p.id) : '';
+              const pIpKey = p.ip || '';
+              const isExpanded = Boolean((pMac && String(expandedCopierId) === String(pMac)) || (pIdKey && String(expandedCopierId) === String(pIdKey)));
 
               const parseSyncObj = (raw: any) => {
                 if (!raw) return null;
@@ -207,10 +232,6 @@ export function CopiersTab(props: any) {
                 }
                 return obj;
               };
-
-              const pMac = (p.mac_address || p.mac_id || '').toUpperCase().replace(/-/g, ':');
-              const pIdKey = p.id !== undefined && p.id !== null ? String(p.id) : '';
-              const pIpKey = p.ip || '';
 
               // Nếu user vừa click "Cập nhật" → hiện trống ngay, không dùng data cũ
               const isClearing = pendingClear.has(pMac) || pendingClear.has(pIdKey) || pendingClear.has(pIpKey);
@@ -237,11 +258,11 @@ export function CopiersTab(props: any) {
               const hasAddressList = liveHasList;
 
               const copierOnlineAgents = (selectedLan?.agents || []).filter((a: any) => a.is_agent_active);
-              const copierTargetAgentUid = getTargetAgentUid ? getTargetAgentUid(p.id) : (selectedAgentUid || p.agent_uid || '');
+              const copierTargetAgentUid = getTargetAgentUid ? getTargetAgentUid(pMac || p.id) : (selectedAgentUid || p.agent_uid || '');
 
               return (
                 <CopierItem
-                  key={p.id}
+                  key={pMac || p.id}
                   p={p}
                   selectedLan={selectedLan}
                   activeAgentUid={agentUid}

@@ -148,16 +148,26 @@ export const useAgentLanPrinters = (deps: any = {}) => {
             // IP user nhập nhưng không match site nào — giữ IP làm LAN UID tạm
             return activeIp;
           }
-          // Chỉ auto-pick khi chỉ có đúng 1 site — nhiều site cần user chọn tay
-          if (rows.length === 1) {
-            localStorage.setItem('goxprint_selected_lan_uid', rows[0].lan_uid);
-            return rows[0].lan_uid;
+          // Khi chưa có IP user chỉ định: kiểm tra xem IP Public hiện tại (client_ip) có khớp mạng LAN nào không
+          const detectedClientIp = (data?.client_ip || '').trim();
+          if (detectedClientIp) {
+            const matchedSite = rows.find((s: any) => {
+              const pubIp = (s.public_ip || s.wan_ip || '').trim();
+              if (pubIp === detectedClientIp) return true;
+              return (s.agents || []).some((ag: any) => (ag.public_ip || ag.wan_ip || ag.ip || '').trim() === detectedClientIp);
+            });
+            if (matchedSite) {
+              localStorage.setItem('goxprint_selected_lan_uid', matchedSite.lan_uid);
+              return matchedSite.lan_uid;
+            }
           }
-          const siteWithPrinters = rows.find((s: any) => (s.printers && s.printers.length > 0) || (s.agents && s.agents.length > 0));
-          const bestUid = siteWithPrinters ? siteWithPrinters.lan_uid : rows[0].lan_uid;
-          localStorage.setItem('goxprint_selected_lan_uid', bestUid);
-          return bestUid;
+
+          // TUYỆT ĐỐI CẤM FALLBACK: Không khớp mạng hiện tại và chưa chọn IP -> KHÔNG CHỌN, để trống
+          localStorage.removeItem('goxprint_selected_lan_uid');
+          return '';
         });
+      } else {
+        setSelectedLanUid('');
       }
       if (isUserRefresh) showToast('Tải mạng LAN', 'success');
     } catch (err: any) {
@@ -234,13 +244,15 @@ export const useAgentLanPrinters = (deps: any = {}) => {
       const siteByUid = lanSites.find((site) => site.lan_uid === selectedLanUid);
       if (siteByUid) return siteByUid;
     }
-    const siteWithPrinters = lanSites.find((site: any) => (site.printers && site.printers.length > 0) || (site.agents && site.agents.length > 0));
-    // Chỉ auto-pick khi chỉ có 1 site — nhiều site yêu cầu user chọn tay
-    return lanSites.length === 1 ? (siteWithPrinters || lanSites[0]) : (siteWithPrinters || null);
+    // TUYỆT ĐỐI CẤM FALLBACK sang siteWithPrinters hoặc lanSites[0]!
+    return null;
   }, [lanSites, selectedPublicIp, selectedLanUid]);
 
   const triggerLanScan = useCallback((lanData: any, isManual = true) => {
-    if (!lanData) return;
+    if (!lanData || !lanData.lan_uid) {
+      showToast('Không có mạng LAN nào được chọn để thực hiện quét!', 'error', 4000);
+      return;
+    }
     const currentLanUid = lanData.lan_uid;
     const now = Date.now();
 
@@ -413,11 +425,21 @@ export const useAgentLanPrinters = (deps: any = {}) => {
   }, [selectedLan, targetInternalIp, lastViewedId]);
 
   const getTargetAgentUid = useCallback((printerId: string | number) => {
-    const pId = Number(printerId);
-    const printer = selectedLan?.printers?.find((p: any) => Number(p.id) === pId || p.id === printerId || p.mac_id === printerId || p.ip === printerId);
     if (!selectedLan) return '';
+    const rawStr = String(printerId || '').trim();
+    const cleanTarget = rawStr.toUpperCase().replace(/[:-]/g, '');
+
+    const printer = selectedLan?.printers?.find((p: any) => {
+      const pMac = String(p?.mac_address || p?.mac_id || p?.mac || '').toUpperCase().replace(/[:-]/g, '');
+      return (cleanTarget && pMac === cleanTarget) || p.ip === rawStr || String(p.id) === rawStr;
+    });
+
     const onlineAgents = (selectedLan.agents || []).filter((a: any) => a.is_agent_active);
-    const selected = selectedTargetAgents[pId];
+    const pMacNorm = (printer?.mac_address || printer?.mac_id || (rawStr.includes(':') ? rawStr : '')).toUpperCase().replace(/-/g, ':');
+    const selected = (pMacNorm && selectedTargetAgents[pMacNorm]) || 
+                     selectedTargetAgents[rawStr] || 
+                     (printer?.id && selectedTargetAgents[printer.id]) ||
+                     (printer?.ip && selectedTargetAgents[printer.ip]);
     if (selected) {
       const isSelOnline = onlineAgents.some((a: any) => a.agent_uid === selected);
       if (isSelOnline) return selected;
@@ -441,7 +463,11 @@ export const useAgentLanPrinters = (deps: any = {}) => {
         const lanPublicIp = selectedLan.public_ip || selectedLan.wan_ip;
         const sameIpAgent = onlineAgents.find((a: any) => (a.public_ip && a.public_ip === lanPublicIp) || (a.wan_ip && a.wan_ip === lanPublicIp));
         const matchedAgent = (p.agent_uid ? onlineAgents.find((a: any) => a.agent_uid === p.agent_uid) : null) || sameIpAgent;
-        defaultTargets[p.id] = matchedAgent ? matchedAgent.agent_uid : (p.agent_uid || '');
+        const chosen = matchedAgent ? matchedAgent.agent_uid : (p.agent_uid || '');
+        const pMac = (p.mac_address || p.mac_id || '').toUpperCase().replace(/-/g, ':');
+        if (pMac) defaultTargets[pMac] = chosen;
+        if (p.ip) defaultTargets[p.ip] = chosen;
+        if (p.id !== undefined && p.id !== null) defaultTargets[p.id] = chosen;
       });
 
       setSelectedTargetAgents((prev) => ({ ...defaultTargets, ...prev }));
@@ -452,11 +478,14 @@ export const useAgentLanPrinters = (deps: any = {}) => {
           const agentPushUser = p.auth_user || p.user || '';
           const agentPushPass = p.auth_password || p.password || '';
 
-          const existing = next[p.id];
+          const pMac = (p.mac_address || p.mac_id || '').toUpperCase().replace(/-/g, ':');
+          const existing = (pMac && next[pMac]) || next[p.id] || (p.ip && next[p.ip]);
           const user = (existing?.user !== undefined) ? existing.user : agentPushUser;
           const pass = (existing?.pass !== undefined) ? existing.pass : agentPushPass;
 
-          next[p.id] = { user, pass };
+          if (pMac) next[pMac] = { user, pass };
+          if (p.ip) next[p.ip] = { user, pass };
+          if (p.id !== undefined && p.id !== null) next[p.id] = { user, pass };
         });
         return next;
       });
@@ -465,13 +494,14 @@ export const useAgentLanPrinters = (deps: any = {}) => {
 
   const handleSaveAuth = async (p: any) => {
     const printerId = String(typeof p === 'object' ? p.id : p);
-    const macId = typeof p === 'object' ? (p.mac_id || p.mac_address || '') : printerId;
+    const rawMac = typeof p === 'object' ? (p.mac_id || p.mac_address || '') : '';
+    const normMac = rawMac ? rawMac.toUpperCase().replace(/-/g, ':') : '';
     const pType = typeof p === 'object' ? (p.printer_type || p.type || '') : '';
-    const creds = copierCredentials[printerId] || { user: '', pass: '' };
+    const creds = (normMac && copierCredentials[normMac]) || copierCredentials[printerId] || { user: '', pass: '' };
 
-    setSaveAuthLoading((prev) => ({ ...prev, [printerId]: true }));
+    setSaveAuthLoading((prev) => ({ ...prev, [printerId]: true, ...(normMac ? { [normMac]: true } : {}) }));
     try {
-      const res = await saveCopierCredentials(macId || printerId, creds.user, creds.pass, macId, pType);
+      const res = await saveCopierCredentials(normMac || printerId, creds.user, creds.pass, normMac || printerId, pType);
       if (res.ok) {
         const cmdId = res.command_id || res.id;
         if (cmdId && pollCommandStatus) {
@@ -524,7 +554,7 @@ export const useAgentLanPrinters = (deps: any = {}) => {
   };
 
   const handleEditIP = (copier: any) => {
-    const defaultAgentUid = getTargetAgentUid(copier.id);
+    const defaultAgentUid = getTargetAgentUid(copier.mac_id || copier.mac_address || copier.ip || copier.id);
     setEditIpModalData({
       isOpen: true,
       copier,

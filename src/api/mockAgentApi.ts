@@ -262,10 +262,10 @@ export async function addPrivateLanEmail(lead: string, lanUid: string, pcName: s
   });
 }
 
-export async function deleteEmailDestination(printerId: string, regNo: string, entryId: string, agentUid?: string): Promise<any> {
+export async function deleteEmailDestination(printerId: string, regNo: string, entryId: string, agentUid?: string, extraData?: any): Promise<any> {
   return fetchApi(`/api/devices/${printerId}/delete-email-dest`, {
     method: 'POST',
-    body: JSON.stringify({ registration_no: regNo, entry_id: entryId, agent_uid: agentUid })
+    body: JSON.stringify({ registration_no: regNo, entry_id: entryId, agent_uid: agentUid, ...(extraData || {}) })
   });
 }
 

@@ -123,10 +123,33 @@ function safePathToken(value: string): string {
 
   const [inputIpDraft, setInputIpDraft] = useState(() => selectedPublicIp || '');
   const inputIpRef = useRef<HTMLInputElement>(null);
-
+  const fixedHeaderRef = useRef<HTMLDivElement>(null);
+  const [headerHeight, setHeaderHeight] = useState<number>(230);
   const [isDirectIpMode, setIsDirectIpMode] = useState(() => Boolean(targetInternalIp));
   const [internalIpDraft, setInternalIpDraft] = useState(() => targetInternalIp || '');
   const inputInternalIpRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const el = fixedHeaderRef.current;
+    if (!el) return;
+
+    const updateHeight = () => {
+      if (fixedHeaderRef.current) {
+        setHeaderHeight(fixedHeaderRef.current.offsetHeight);
+      }
+    };
+
+    updateHeight();
+
+    const resizeObserver = new ResizeObserver(updateHeight);
+    resizeObserver.observe(el);
+
+    window.addEventListener('resize', updateHeight);
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', updateHeight);
+    };
+  }, [isDirectIpMode]);
 
   useEffect(() => {
     setInputIpDraft(selectedPublicIp || '');
@@ -417,7 +440,7 @@ print("__PRINTER_INFO_JSON_END__")
       </div>
 
       {/* FIXED HEADER BLOCK */}
-      <div style={styles.fixedHeader}>
+      <div ref={fixedHeaderRef} style={styles.fixedHeader}>
         <div style={styles.header}>
           <h1 style={styles.title}>🛠️ Quản lý Mạng LAN</h1>
         </div>
@@ -487,13 +510,19 @@ print("__PRINTER_INFO_JSON_END__")
               {!isDirectIpMode && (
                 <button
                   onClick={async () => {
-                    if (inputIpDraft) {
-                      await handleApplyPublicIp(inputIpDraft);
+                    const targetIp = (inputIpDraft || '').trim();
+                    if (targetIp) {
+                      await handleApplyPublicIp(targetIp);
                     }
                     if (selectedLan) {
                       triggerLanScan(selectedLan, true);
-                    } else if (fetchLanSitesData) {
-                      fetchLanSitesData(true);
+                    } else {
+                      if (!targetIp && showToast) {
+                        showToast('Chưa có mạng LAN nào được kết nối. Vui lòng nhập IP Public!', 'warning', 3500);
+                      }
+                      if (fetchLanSitesData) {
+                        fetchLanSitesData(true);
+                      }
                     }
                   }}
                   title="Gửi & Kết nối IP Public (Enter)"
@@ -667,7 +696,7 @@ print("__PRINTER_INFO_JSON_END__")
       </div>
 
       {/* Content Area with Top Margin to avoid overlapping the fixed header */}
-      <div style={styles.scrollableContent}>
+      <div style={{ ...styles.scrollableContent, marginTop: `${headerHeight + 12}px` }}>
         {lanSitesLoading && (
           <div style={styles.loadingWrapper}>
             <LoadingSpinner size="md" />
