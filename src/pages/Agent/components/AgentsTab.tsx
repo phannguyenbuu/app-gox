@@ -32,7 +32,7 @@ export function AgentsTab(props: any) {
     directLan,
     editIpModalData,
     editableSettingsText,
-    emailFileCounts,
+    emailFileCounts = {},
     executeRemoteInstallDriver,
     expandedDriverMenus,
     expandedDrivers,
@@ -127,7 +127,7 @@ export function AgentsTab(props: any) {
     setDirectLan,
     setEditIpModalData,
     setEditableSettingsText,
-    setEmailFileCounts,
+    setEmailFileCounts = () => {},
     setExpandedDriverMenus,
     setExpandedDrivers,
     setExpandedPrinters,
@@ -225,19 +225,43 @@ export function AgentsTab(props: any) {
                         <GlowCard key={agent.agent_uid}>
                           <div style={styles.cardHeader}>
                             <span style={styles.cardTitle}>💻 {agent.hostname}</span>
-                            <span
-                              style={{
-                                ...styles.statusBadge,
-                                color: isOnline ? 'var(--color-status-online)' : 'var(--color-status-offline)',
-                                borderColor: isOnline ? 'var(--color-status-online)' : 'var(--color-status-offline)',
-                                background: isOnline ? 'rgba(0, 255, 136, 0.08)' : 'rgba(255, 68, 102, 0.08)',
-                              }}
-                            >
-                              {isOnline ? (agent.is_master ? '★ MASTER' : '● ONLINE') : '● OFFLINE'}
-                            </span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              {agent.app_version && (
+                                <span
+                                  style={{
+                                    fontSize: '0.72rem',
+                                    fontFamily: 'monospace',
+                                    fontWeight: 600,
+                                    padding: '2px 6px',
+                                    borderRadius: '4px',
+                                    background: 'rgba(0, 212, 255, 0.08)',
+                                    border: '1px solid rgba(0, 212, 255, 0.25)',
+                                    color: 'var(--color-primary)',
+                                  }}
+                                >
+                                  v{agent.app_version}
+                                </span>
+                              )}
+                              <span
+                                style={{
+                                  ...styles.statusBadge,
+                                  color: isOnline ? 'var(--color-status-online)' : 'var(--color-status-offline)',
+                                  borderColor: isOnline ? 'var(--color-status-online)' : 'var(--color-status-offline)',
+                                  background: isOnline ? 'rgba(0, 255, 136, 0.08)' : 'rgba(255, 68, 102, 0.08)',
+                                }}
+                              >
+                                {isOnline ? '● ONLINE' : '● OFFLINE'}
+                              </span>
+                            </div>
                           </div>
 
                           <div style={styles.cardDetails}>
+                            <div style={styles.detailRow}>
+                              <span style={styles.detailLabel}>Phiên bản:</span>
+                              <span style={{ ...styles.detailValue, fontFamily: 'monospace', fontWeight: 600, color: agent.app_version ? 'var(--color-primary)' : 'var(--color-text-secondary)' }}>
+                                {agent.app_version ? `v${agent.app_version}` : '—'}
+                              </span>
+                            </div>
                             <div style={styles.detailRow}>
                               <span style={styles.detailLabel}>UID:</span>
                               <span style={{ ...styles.detailValue, fontFamily: 'monospace', fontSize: '0.75rem' }}>{agent.agent_uid}</span>
@@ -246,6 +270,24 @@ export function AgentsTab(props: any) {
                               <span style={styles.detailLabel}>IP cục bộ:</span>
                               <span style={{ ...styles.detailValue, display: 'flex', alignItems: 'center', gap: '6px' }}>
                                 {agent.local_ip}
+                                {agent.ip_mode && agent.ip_mode !== 'unknown' && (
+                                  <span
+                                    style={{
+                                      fontSize: '0.65rem',
+                                      fontWeight: 700,
+                                      padding: '1px 5px',
+                                      borderRadius: '4px',
+                                      border: '1px solid',
+                                      color: agent.ip_mode.toLowerCase() === 'dhcp' ? '#f59e0b' : '#3b82f6',
+                                      borderColor: agent.ip_mode.toLowerCase() === 'dhcp' ? 'rgba(245, 158, 11, 0.4)' : 'rgba(59, 130, 246, 0.4)',
+                                      background: agent.ip_mode.toLowerCase() === 'dhcp' ? 'rgba(245, 158, 11, 0.1)' : 'rgba(59, 130, 246, 0.1)',
+                                      letterSpacing: '0.5px',
+                                    }}
+                                    title={agent.ip_mode.toLowerCase() === 'dhcp' ? 'IP Động (Router cấp tự động qua DHCP)' : 'IP Tĩnh (Đã cấu hình cố định trong máy)'}
+                                  >
+                                    {agent.ip_mode.toLowerCase() === 'dhcp' ? 'DHCP' : 'TĨNH'}
+                                  </span>
+                                )}
                                 <button
                                   title="Làm mới IP cục bộ"
                                   onClick={async (e) => {
@@ -254,7 +296,7 @@ export function AgentsTab(props: any) {
                                       const res = await triggerAgentUtilityExec(agent.agent_uid, 'get_agent_ip', '');
                                       if (res.ok && res.command_id) {
                                         if (props.showToast) {
-                                          props.showToast('Lấy IP cục bộ...', 'info');
+                                          props.showToast('Đang lấy lại IP cục bộ...', 'info');
                                         }
                                         const commandId = res.command_id;
                                         const startTime = Date.now();
@@ -271,7 +313,12 @@ export function AgentsTab(props: any) {
                                                 await props.fetchLanSitesData(true);
                                               }
                                               if (props.showToast) {
-                                                props.showToast('Lấy IP cục bộ', 'success');
+                                                const rawOut = statusRes.result || statusRes.output || statusRes.result_payload || '';
+                                                const modeMatch = rawOut.match(/\b(DHCP|STATIC)\b/i);
+                                                const modeText = modeMatch ? ` [${modeMatch[1].toUpperCase() === 'DHCP' ? 'DHCP' : 'TĨNH'}]` : '';
+                                                const ipMatch = rawOut.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/);
+                                                const ipText = ipMatch ? ipMatch[1] : '';
+                                                props.showToast(`IP cục bộ: ${ipText}${modeText}`, 'success');
                                               }
                                             } else if (statusRes.status === 'failed') {
                                               clearInterval(timer);
@@ -286,12 +333,12 @@ export function AgentsTab(props: any) {
                                         }, 1000);
                                       } else {
                                         if (props.showToast) {
-                                          props.showToast('Lấy IP thất bại', 'error');
+                                          props.showToast('Lấy IP thất bại: ' + (res.error || 'Lỗi gửi lệnh'), 'error');
                                         }
                                       }
                                     } catch (err: any) {
                                       if (props.showToast) {
-                                        props.showToast('Lấy IP thất bại', 'error');
+                                        props.showToast('Lấy IP thất bại: ' + (err?.message || 'Lỗi mạng'), 'error');
                                       }
                                     }
                                   }}
@@ -338,7 +385,7 @@ export function AgentsTab(props: any) {
                                   const agentEmails = selectedLan ? selectedLan.emails.filter(
                                     (e: any) => e.email_type === 'private' && e.pc_name && e.pc_name.toLowerCase().trim() === agent.agent_uid.toLowerCase().trim()
                                   ) : [];
-                                  const totalCount = agentEmails.reduce((sum: number, em: any) => sum + (emailFileCounts[em.email] ?? 0), 0);
+                                  const totalCount = agentEmails.reduce((sum: number, em: any) => sum + (emailFileCounts?.[em.email] ?? 0), 0);
 
                                   return (
                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -360,7 +407,7 @@ export function AgentsTab(props: any) {
                                       {agentEmails.length > 0 && (
                                         <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
                                           {agentEmails.map((em: any) => {
-                                            const count = emailFileCounts[em.email] ?? 0;
+                                            const count = emailFileCounts?.[em.email] ?? 0;
                                             return (
                                               <button
                                                 key={em.email}

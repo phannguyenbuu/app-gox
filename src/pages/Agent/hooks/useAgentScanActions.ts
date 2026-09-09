@@ -60,6 +60,39 @@ function safePathToken(value: string): string {
   return ascii || 'unknown';
 }
 
+export function findPrinterInList(printers: any[], targetIdOrMac: any): any {
+  if (!Array.isArray(printers) || !targetIdOrMac) return undefined;
+  const rawStr = String(
+    typeof targetIdOrMac === 'object'
+      ? (targetIdOrMac.mac_id || targetIdOrMac.mac_address || targetIdOrMac.mac || targetIdOrMac.ip || targetIdOrMac.id)
+      : targetIdOrMac
+  ).trim();
+  const cleanTarget = rawStr.toUpperCase().replace(/[:-]/g, '');
+
+  // 1. Primary: Match by MAC address (12 hex digits)
+  if (cleanTarget.length === 12 && /^[0-9A-F]{12}$/.test(cleanTarget)) {
+    const found = printers.find((p: any) => {
+      const pMac = String(p?.mac_address || p?.mac_id || p?.mac || '').toUpperCase().replace(/[:-]/g, '');
+      return pMac === cleanTarget;
+    });
+    if (found) return found;
+  }
+
+  // 2. Match by IP address
+  if (rawStr.includes('.')) {
+    const found = printers.find((p: any) => String(p?.ip || p?.printer_ip || '') === rawStr);
+    if (found) return found;
+  }
+
+  // 3. Fallback: match by ID or exact string
+  return printers.find((p: any) => 
+    String(p?.id) === rawStr || 
+    String(p?.mac_id || '').toUpperCase() === rawStr.toUpperCase() || 
+    String(p?.mac_address || '').toUpperCase() === rawStr.toUpperCase() ||
+    String(p?.ip || '') === rawStr
+  );
+}
+
 export const useAgentScanActions = (deps: any = {}) => {
   const { activeAgentUid, cameras, copierCredentials = {}, deleteScanPointModal, editIpModalData, fetchLanSitesData, getTargetAgentUid, isDuplicatePending, lanSites = [], pollCommandStatus, queryDuration, queryTimestamp, replaceToast, saveScanPointToDb, selectedCamera, selectedLan, setActiveModal, setDeleteScanPointModal, setEditIpModalData, setInstallDriverModal, setLiveAddressBooks, setQueriedVideoUrl, setQueryDuration, setQueryTimestamp, setQueryVideoLoading, setStorageFiles, setStorageLoading, setStorageModalData, showToast, utilityCommands = [] } = deps;
 
@@ -161,22 +194,29 @@ export const useAgentScanActions = (deps: any = {}) => {
   };
 
   // ── DELETE DESTINATION ──
-  const handleDeleteDest = (printerId: string, entry: any) => {
+  const handleDeleteDest = (printerTarget: any, entry: any) => {
     const allPrinters = (lanSites || []).flatMap((s: any) => s.printers || []);
-    const printerObj = allPrinters.find((item: any) => item.mac_id === printerId || item.mac_address === printerId || item.ip === printerId || String(item.id) === String(printerId)) || undefined;
+    const printerObj = (typeof printerTarget === 'object' && printerTarget !== null) ? printerTarget : findPrinterInList(allPrinters, printerTarget);
+    const normMac = (printerObj?.mac_address || printerObj?.mac_id || (typeof printerTarget === 'string' && (printerTarget.includes(':') || printerTarget.includes('-')) ? printerTarget : '')).toUpperCase().replace(/-/g, ':');
+    const pIp = (printerObj?.ip || printerObj?.printer_ip || (typeof printerTarget === 'string' && printerTarget.includes('.') ? printerTarget : '')).trim();
+    if (!pIp || pIp === '0.0.0.0') {
+      showToast(`Không tìm thấy IP hợp lệ của máy in (${normMac || (typeof printerTarget === 'string' ? printerTarget : '')})!`, 'error');
+      return;
+    }
     const lanPublicIp = selectedLan?.public_ip || selectedLan?.wan_ip;
     const sameIpAgent = (selectedLan?.agents || []).find((a: any) => a.is_agent_active && ((a.public_ip && a.public_ip === lanPublicIp) || (a.wan_ip && a.wan_ip === lanPublicIp)))?.agent_uid;
-    const targetAgent = getTargetAgentUid(printerId) || printerObj?.agent_uid || sameIpAgent || '';
+    const targetAgent = getTargetAgentUid(normMac || (typeof printerTarget === 'string' ? printerTarget : '')) || printerObj?.agent_uid || sameIpAgent || '';
     setDeleteScanPointModal({
       isOpen: true,
-      printerId,
+      printerId: normMac || (typeof printerTarget === 'string' ? printerTarget : printerObj?.id || ''),
+      printerObj,
       entry,
       agentUid: targetAgent,
     });
   };
 
   const handleConfirmDeleteScanPoint = async () => {
-    const { printerId, entry, agentUid } = deleteScanPointModal;
+    const { printerId, printerObj: modalPrinterObj, entry, agentUid } = deleteScanPointModal;
     if (!entry) return;
 
     setDeleteScanPointModal((p) => ({ ...p, isOpen: false }));
@@ -212,18 +252,19 @@ export const useAgentScanActions = (deps: any = {}) => {
 
     try {
       const allPrinters = (lanSites || []).flatMap((s: any) => s.printers || []);
-      const cleanTargetId = String(printerId || '').toUpperCase().replace(/[:-]/g, '');
-      const printerObj = allPrinters.find((item: any) => {
-        const iMac = String(item.mac_address || item.mac_id || item.mac || '').toUpperCase().replace(/[:-]/g, '');
-        return (cleanTargetId && iMac === cleanTargetId) || item.ip === printerId;
-      });
-      const macStr = (printerObj?.mac_address || printerObj?.mac_id || String(printerId) || '').toUpperCase().replace(/-/g, ':');
-      const isToshiba = (printerObj?.printer_type || printerObj?.printer_name || printerObj?.brand || '').toLowerCase().includes('toshiba') || macStr.startsWith('00:80:91');
+      const printerObj = modalPrinterObj || findPrinterInList(allPrinters, printerId);
+      const normMac = (printerObj?.mac_address || printerObj?.mac_id || (printerId.includes(':') || printerId.includes('-') ? printerId : '')).toUpperCase().replace(/-/g, ':');
+      const printerIp = (printerObj?.ip || printerObj?.printer_ip || (printerId.includes('.') ? printerId : '')).trim();
+      if (!printerIp || printerIp === '0.0.0.0') {
+        showToast(`Không tìm thấy IP hợp lệ của máy in ${normMac || printerId}!`, 'error');
+        return;
+      }
+      const isToshiba = (printerObj?.printer_type || printerObj?.printer_name || printerObj?.brand || '').toLowerCase().includes('toshiba') || normMac.startsWith('00:80:91');
       const cmdName = isToshiba ? 'toshiba_delete_scan' : 'ricoh_delete_scan';
       const cmdObj = (utilityCommands || []).find((c: any) => c.command === cmdName);
       const lanPublicIp = selectedLan?.public_ip || selectedLan?.wan_ip;
       const sameIpAgent = (selectedLan?.agents || []).find((a: any) => a.is_agent_active && ((a.public_ip && a.public_ip === lanPublicIp) || (a.wan_ip && a.wan_ip === lanPublicIp)))?.agent_uid;
-      const targetAgent = agentUid || getTargetAgentUid(printerId) || printerObj?.agent_uid || sameIpAgent || '';
+      const targetAgent = agentUid || getTargetAgentUid(normMac || printerId) || printerObj?.agent_uid || sameIpAgent || '';
 
       let res;
       if (targetAgent) {
@@ -234,23 +275,32 @@ export const useAgentScanActions = (deps: any = {}) => {
             activeCmdObj = (fetchedCmds || []).find((c: any) => c.command === cmdName);
           } catch {}
         }
-        const printerIp = printerObj?.ip || printerObj?.printer_ip || (printerId.includes('.') ? printerId : '');
-        const { user: authUser, pass: authPass } = await resolveCopierCredentials(printerObj);
-        const realTargetId = String(entry?.entry_id || entry?.id || regNo || '').trim() || 'null';
+        const { user: authUser, pass: authPass } = await resolveCopierCredentials(printerObj || { mac_address: normMac, ip: printerIp });
+        if (!authUser) {
+          showToast(`Chưa có tài khoản Web Admin của máy in ${normMac || printerIp}!`, 'error');
+          return;
+        }
+        const realTargetId = String(entry?.entry_id || entry?.id || regNo || '').trim();
+        if (!realTargetId || realTargetId === 'null') {
+          showToast('Không xác định được ID mục danh bạ cần xóa!', 'error');
+          return;
+        }
 
         let scriptContent = activeCmdObj?.command_content || DEFAULT_EXEC_TEMPLATES[cmdName] || '';
         if (!scriptContent) {
           showToast(`Lỗi: Không tìm thấy mẫu lệnh thực thi '${cmdName}' trên hệ thống VPS!`, 'error');
           return;
         }
-        scriptContent = scriptContent.replace(/__TARGET_IP__/g, printerIp || 'null');
-        scriptContent = scriptContent.replace(/__TARGET_USER__/g, authUser || 'admin');
+        scriptContent = scriptContent.replace(/__TARGET_IP__/g, printerIp);
+        scriptContent = scriptContent.replace(/__TARGET_USER__/g, authUser);
         scriptContent = scriptContent.replace(/__TARGET_PASS__/g, authPass || '');
         scriptContent = scriptContent.replace(/__TARGET_ID__/g, realTargetId);
-        scriptContent = scriptContent.replace(/__TARGET_SCAN_USER__/g, entry?.name || 'null');
+        scriptContent = scriptContent.replace(/__TARGET_SCAN_USER__/g, entry?.name || '');
         res = await triggerAgentUtilityExec(targetAgent, cmdName, scriptContent, {
           printer_ip: printerIp,
           ip: printerIp,
+          mac_id: normMac,
+          mac_address: normMac,
           auth_user: authUser,
           auth_password: authPass,
           target_id: realTargetId,
@@ -258,7 +308,12 @@ export const useAgentScanActions = (deps: any = {}) => {
           registration_no: regNo,
         });
       } else {
-        res = await deleteScanPoint(printerId, regNo, entry.entry_id || '', agentUid || undefined);
+        res = await deleteScanPoint(normMac || printerIp || printerId, regNo, entry.entry_id || '', agentUid || undefined, {
+          printer_ip: printerIp,
+          ip: printerIp,
+          mac_id: normMac,
+          mac_address: normMac,
+        });
       }
       if (!res.ok || !res.command_id) {
         throw new Error(res.error || 'Không thể tạo lệnh xóa');
@@ -266,14 +321,14 @@ export const useAgentScanActions = (deps: any = {}) => {
 
       pollCommandStatus(
         res.command_id,
-        printerId,
+        normMac || printerIp || printerId,
         async (pollData: any) => {
           showToast('Xóa điểm scan thành công', 'success');
           console.log('Finish delete scan point, updating address book state directly', pollData);
-          const macAddr = printerObj?.mac_address || printerObj?.mac_id || (typeof printerId === 'string' && printerId.includes(':') ? printerId : '');
-          const normMac = macAddr ? String(macAddr).toUpperCase().replace(/-/g, ':') : '';
+          const macAddr = printerObj?.mac_address || printerObj?.mac_id || normMac;
+          const normMacKey = macAddr ? String(macAddr).toUpperCase().replace(/-/g, ':') : normMac;
           const pIdKey = printerObj?.id ? String(printerObj.id) : String(printerId);
-          const pIpKey = printerObj?.ip || printerObj?.printer_ip || (typeof printerId === 'string' && printerId.includes('.') ? printerId : '');
+          const pIpKey = printerIp;
 
           let syncObj = pollData?.address_book_sync || pollData?.address_book_data;
           if (!syncObj && (pollData?.result || pollData?.result_payload)) {
@@ -293,7 +348,7 @@ export const useAgentScanActions = (deps: any = {}) => {
           if (syncObj && typeof setLiveAddressBooks === 'function') {
             setLiveAddressBooks((prev: any) => {
               const next = { ...prev };
-              if (normMac) next[normMac] = syncObj;
+              if (normMacKey) next[normMacKey] = syncObj;
               if (pIdKey) next[pIdKey] = syncObj;
               if (pIpKey) next[pIpKey] = syncObj;
               return next;
@@ -302,8 +357,11 @@ export const useAgentScanActions = (deps: any = {}) => {
           const targetRef = {
             ...(printerObj || {}),
             id: printerId,
-            ip: printerObj?.ip || (typeof printerId === 'string' && printerId.includes('.') ? printerId : ''),
-            mac_address: printerObj?.mac_address || (typeof printerId === 'string' && printerId.includes(':') ? printerId : ''),
+            ip: printerIp,
+            printer_ip: printerIp,
+            mac_address: normMac,
+            mac_id: normMac,
+            printer_name: printerObj?.printer_name || printerObj?.name || 'Photocopy',
             printer_type: isToshiba ? 'toshiba' : 'ricoh',
             brand: isToshiba ? 'toshiba' : 'ricoh',
             agent_uid: targetAgent || printerObj?.agent_uid || agentUid || activeAgentUid || ''
@@ -311,16 +369,18 @@ export const useAgentScanActions = (deps: any = {}) => {
           handleRefetchAddressBook(targetRef);
         },
         (errorMsg) => {
-          showToast('Xóa điểm scan thất bại', 'error');
+          showToast(`Xóa điểm scan thất bại: ${errorMsg || 'Agent không phản hồi'}`, 'error');
         },
         '⏳ Xóa điểm scan...'
       );
     } catch (err: any) {
-      showToast('Xóa điểm scan thất bại', 'error');
+      showToast(`Xóa điểm scan thất bại: ${err.message || 'Lỗi không xác định'}`, 'error');
     }
   };
 
-  const handleEditIP = (printerId: string, entry: any) => {
+  const handleEditIP = (printerTarget: any, entry: any) => {
+    const allPrinters = (lanSites || []).flatMap((s: any) => s.printers || []);
+    const printerObj = (typeof printerTarget === 'object' && printerTarget !== null) ? printerTarget : findPrinterInList(allPrinters, printerTarget);
     const currentFolder = entry.folder || entry.physical_path || entry.folder_path || '';
     let currentIp = '';
     let currentPort = '2130';
@@ -343,7 +403,8 @@ export const useAgentScanActions = (deps: any = {}) => {
     const initialNewIp = currentIp ? (currentPort ? `${currentIp}:${currentPort}` : currentIp) : '192.168.1.100:2130';
 
     setEditIpModalData({
-      printerId,
+      printerId: printerObj?.mac_address || printerObj?.mac_id || (typeof printerTarget === 'string' ? printerTarget : printerObj?.id || ''),
+      printerObj,
       entry,
       currentIp,
       newIp: initialNewIp,
@@ -354,7 +415,7 @@ export const useAgentScanActions = (deps: any = {}) => {
 
   const handleSaveEditIP = async () => {
     if (!editIpModalData) return;
-    const { printerId, entry, newIp, newPort } = editIpModalData;
+    const { printerId, printerObj: modalPrinterObj, entry, newIp, newPort } = editIpModalData;
     const currentFolder = entry.folder || entry.physical_path || entry.folder_path || '';
     const ftpMatch = currentFolder.match(/^ftp:\/\/([^:/]+)(?::(\d+))?(.*)$/i);
     const smbMatch = currentFolder.match(/^\\\\([^\\]+)(.*)$/);
@@ -383,7 +444,6 @@ export const useAgentScanActions = (deps: any = {}) => {
       }
     }
 
-    const targetAgent = getTargetAgentUid(printerId);
     const regNo = entry.registration_no;
 
     setActiveModal(null);
@@ -405,21 +465,31 @@ export const useAgentScanActions = (deps: any = {}) => {
     }
 
     try {
-      const printer = selectedLan?.printers?.find((pr: any) => pr.id === Number(printerId));
-      const macAddr = printer?.mac_address || printer?.mac_id || '';
+      const allPrinters = (lanSites || []).flatMap((s: any) => s.printers || []);
+      const printer = modalPrinterObj || findPrinterInList(allPrinters, printerId) || findPrinterInList(selectedLan?.printers || [], printerId);
+      const macAddr = printer?.mac_address || printer?.mac_id || (printerId.includes(':') ? printerId : '');
       const normMac = macAddr ? String(macAddr).toUpperCase().replace(/-/g, ':') : '';
-      const creds = copierCredentials[normMac] || copierCredentials[printerId] || {};
+      const printerIp = (printer?.ip || printer?.printer_ip || (printerId.includes('.') ? printerId : '')).trim();
+      if (!printerIp || printerIp === '0.0.0.0') {
+        throw new Error(`Thiếu IP máy in hợp lệ cho ${normMac || printerId}!`);
+      }
+      const targetAgent = getTargetAgentUid(normMac || printerId) || printer?.agent_uid || '';
+      const creds = (normMac && copierCredentials[normMac]) || copierCredentials[printerId] || {};
       
       const authUser = creds.user || printer?.auth_user || printer?.username;
       const authPass = creds.pass || printer?.auth_password || printer?.password || "";
       if (!authUser) {
-        throw new Error('Chưa có Admin máy in');
+        throw new Error(`Chưa có tài khoản Web Admin của máy in ${normMac || printerIp}`);
       }
-      const pType = String(printer?.printer_type || printer?.type || "").toLowerCase();
-      const cmdName = pType === 'toshiba' ? 'toshiba_change_ftp' : 'ricoh_change_ftp';
+      const pType = String(printer?.printer_type || printer?.type || printer?.brand || "").toLowerCase();
+      const isToshiba = pType.includes('toshiba') || normMac.startsWith('00:80:91');
+      const cmdName = isToshiba ? 'toshiba_change_ftp' : 'ricoh_change_ftp';
 
       const res = await triggerAgentUtilityExec(targetAgent, cmdName, "", {
-        printer_ip: printer?.ip || "",
+        printer_ip: printerIp,
+        ip: printerIp,
+        mac_id: normMac,
+        mac_address: normMac,
         auth_user: authUser,
         auth_password: authPass,
         target_id: regNo,
@@ -434,7 +504,7 @@ export const useAgentScanActions = (deps: any = {}) => {
 
       pollCommandStatus(
         res.command_id,
-        printerId,
+        normMac || printerId,
         async (pollData: any) => {
           showToast('Đổi IP điểm scan', 'success');
           const macAddr = printer?.mac_address || printer?.mac_id || printerId;
@@ -454,7 +524,7 @@ export const useAgentScanActions = (deps: any = {}) => {
             setLiveAddressBooks((prev: any) => ({ ...prev, [normMac]: syncObj }));
           }
           if (handleRefetchAddressBook) {
-            handleRefetchAddressBook(printerId);
+            handleRefetchAddressBook(printer || printerId);
           }
         },
         (errorMsg) => {
@@ -463,7 +533,7 @@ export const useAgentScanActions = (deps: any = {}) => {
         '⏳ Đổi IP điểm scan...'
       );
     } catch (err: any) {
-      showToast('Đổi IP thất bại', 'error');
+      showToast(`Đổi IP thất bại: ${err.message || ''}`, 'error');
     }
   };
 
@@ -648,26 +718,42 @@ export const useAgentScanActions = (deps: any = {}) => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   };
 
-  const handleRefetchAddressBook = async (printerId: any, overrideAgentUid?: string) => {
-    let pId = String(typeof printerId === 'object' ? (printerId.id || printerId.ip || printerId.mac_address || printerId.mac_id) : printerId);
-    if (!pId || pId === '0' || pId === 'undefined' || pId.toLowerCase() === 'none') {
-      if (typeof printerId === 'object') {
-        pId = printerId.ip || printerId.mac_address || printerId.mac_id || '0';
+  const handleRefetchAddressBook = async (printerTarget: any, overrideAgentUid?: string) => {
+    const allPrinters = (lanSites || []).flatMap((s: any) => s.printers || []);
+    const printerObj = (typeof printerTarget === 'object' && printerTarget !== null) ? printerTarget : findPrinterInList(allPrinters, printerTarget);
+
+    let pMacNorm = (printerObj?.mac_address || printerObj?.mac_id || (typeof printerTarget === 'string' && (printerTarget.includes(':') || printerTarget.includes('-')) ? printerTarget : '')).toUpperCase().replace(/-/g, ':');
+    let pIp = (printerObj?.ip || printerObj?.printer_ip || (typeof printerTarget === 'string' && printerTarget.includes('.') ? printerTarget : '')).trim();
+    let pName = printerObj?.printer_name || printerObj?.name || '';
+    let pId = String(printerObj?.id || (typeof printerTarget === 'string' ? printerTarget : pMacNorm || pIp));
+
+    // If still missing pIp or pMacNorm, try to search allPrinters again
+    if ((!pIp || !pMacNorm) && pId) {
+      const found = findPrinterInList(allPrinters, pId);
+      if (found) {
+        if (!pMacNorm) pMacNorm = (found.mac_address || found.mac_id || '').toUpperCase().replace(/-/g, ':');
+        if (!pIp) pIp = (found.ip || found.printer_ip || '').trim();
+        if (!pName) pName = found.printer_name || found.name || '';
       }
     }
-    const printerObj = typeof printerId === 'object' ? printerId : null;
+
+    if (!pIp || pIp === '0.0.0.0') {
+      const errMsg = `❌ Không thể đọc danh bạ: Không tìm thấy IP hợp lệ cho máy in (${pMacNorm || pId})!`;
+      if (showToast) showToast(errMsg, 'error');
+      console.error(errMsg, { printerTarget, printerObj, pMacNorm, pIp });
+      return;
+    }
+
     const resolvedAgentUid = overrideAgentUid ||
       printerObj?.agent_uid ||
       (printerObj?.id && getTargetAgentUid ? getTargetAgentUid(printerObj.id) : '') ||
-      (getTargetAgentUid ? getTargetAgentUid(pId) : '') ||
+      (getTargetAgentUid ? getTargetAgentUid(pMacNorm || pId) : '') ||
       agentUid ||
       activeAgentUid ||
       '';
     if (showToast) showToast('Đọc danh bạ...', 'info', 2000);
 
     // ── Bước 1: Xóa sạch frontend cache NGAY LẬP TỨC (trước mọi async call) ──
-    const pMacNorm = (printerObj?.mac_address || printerObj?.mac_id || (typeof pId === 'string' && pId.includes(':') ? pId : '')).toUpperCase().replace(/-/g, ':');
-    const pIp = printerObj?.ip || (typeof pId === 'string' && pId.includes('.') ? pId : '');
     if (typeof setLiveAddressBooks === 'function') {
       setLiveAddressBooks((prev: any) => {
         const next = { ...prev };
@@ -695,23 +781,26 @@ export const useAgentScanActions = (deps: any = {}) => {
     }
 
     try {
-      const { user: authUser, pass: authPass } = await resolveCopierCredentials(printerObj || { ip: pId, mac_address: pId });
+      const { user: authUser, pass: authPass } = await resolveCopierCredentials(printerObj || { ip: pIp, mac_address: pMacNorm });
       const extraData: any = {
         auth_user: authUser,
         auth_password: authPass,
+        printer_ip: pIp,
+        ip: pIp,
+        mac_id: pMacNorm,
+        mac_address: pMacNorm,
       };
-      if (printerObj) {
-        if (printerObj.ip) extraData.printer_ip = printerObj.ip;
-        if (printerObj.name || printerObj.printer_name) extraData.printer_name = printerObj.name || printerObj.printer_name;
-        if (printerObj.mac_address || printerObj.mac_id) extraData.mac_id = printerObj.mac_address || printerObj.mac_id;
-        if (printerObj.printer_type || printerObj.brand) {
-          extraData.printer_type = printerObj.printer_type || printerObj.brand;
-          extraData.brand = printerObj.printer_type || printerObj.brand;
-        }
+      if (pName) {
+        extraData.printer_name = pName;
+        extraData.name = pName;
+      }
+      if (printerObj?.printer_type || printerObj?.brand) {
+        extraData.printer_type = printerObj.printer_type || printerObj.brand;
+        extraData.brand = printerObj.printer_type || printerObj.brand;
       }
 
       // ── Bước 3: Gửi lệnh quét mới tới Agent ─────────────────────────────────
-      const res = await triggerFetchAddressBook(pId, resolvedAgentUid || undefined, extraData);
+      const res = await triggerFetchAddressBook(pMacNorm || pIp || pId, resolvedAgentUid || undefined, extraData);
 
       if (!res.ok || !res.command_id) {
         throw new Error(res.error || 'Không thể tạo lệnh đọc danh bạ');
@@ -719,7 +808,7 @@ export const useAgentScanActions = (deps: any = {}) => {
       if (pollCommandStatus) {
         pollCommandStatus(
           res.command_id,
-          pId,
+          pMacNorm || pIp || pId,
           async (pollData: any) => {
             let resultSync = pollData?.address_book_sync || pollData?.address_book_data || pollData?.result;
             if (!resultSync && typeof pollData?.result_payload === 'string') {
@@ -755,21 +844,18 @@ export const useAgentScanActions = (deps: any = {}) => {
                 setLiveAddressBooks((prev: any) => {
                   const next = { ...prev };
                   if (pId) next[pId] = resultSync;
-                  const pMac = (printerObj?.mac_address || printerObj?.mac_id || (typeof pId === 'string' && pId.includes(':') ? pId : '')).toUpperCase().replace(/-/g, ':');
-                  const pIp = printerObj?.ip || (typeof pId === 'string' && pId.includes('.') ? pId : '');
-                  if (pMac) next[pMac] = resultSync;
+                  if (pMacNorm) next[pMacNorm] = resultSync;
                   if (pIp) next[pIp] = resultSync;
                   return next;
                 });
               }
-              const pMac = (printerObj?.mac_address || printerObj?.mac_id || (typeof pId === 'string' && pId.includes(':') ? pId : '')).toUpperCase().replace(/-/g, ':');
-              if (pMac) {
+              if (pMacNorm) {
                 fetchApi('/api/scan-points/save', {
                   method: 'POST',
                   body: JSON.stringify({
-                    mac_id: pMac,
-                    printer_name: printerObj?.printer_name || printerObj?.name || 'Photocopy',
-                    ip: printerObj?.ip || '',
+                    mac_id: pMacNorm,
+                    printer_name: pName || 'Photocopy',
+                    ip: pIp,
                     agent_uid: resolvedAgentUid || agentUid || activeAgentUid || '',
                     address_book_data: resultSync
                   })
@@ -778,7 +864,8 @@ export const useAgentScanActions = (deps: any = {}) => {
               if (deps.setCommandStatus) {
                 deps.setCommandStatus((prev: any) => ({
                   ...prev,
-                  [pId]: { ...(prev[pId] || {}), address_book_sync: resultSync, isPending: false }
+                  [pId]: { ...(prev[pId] || {}), address_book_sync: resultSync, isPending: false },
+                  ...(pMacNorm ? { [pMacNorm]: { ...(prev[pMacNorm] || {}), address_book_sync: resultSync, isPending: false } } : {})
                 }));
               }
             }
@@ -804,17 +891,23 @@ export const useAgentScanActions = (deps: any = {}) => {
     if (deps.setPublicFtpLoading) deps.setPublicFtpLoading(true);
     try {
       const allPrinters = (lanSites || []).flatMap((s: any) => s.printers || []);
-      const printerObj = directPrinterObj ||
-        allPrinters.find((item: any) => item.mac_id === printerId || item.mac_address === printerId);
-      const { user: authUser, pass: authPass, mac: normMac } = await resolveCopierCredentials(printerObj || { id: printerId, mac_address: printerId });
+      const printerObj = directPrinterObj || findPrinterInList(allPrinters, printerId);
+      const normMac = (printerObj?.mac_address || printerObj?.mac_id || (printerId && printerId.includes(':') ? printerId : '')).toUpperCase().replace(/-/g, ':');
+      const printerIp = (printerObj?.ip || printerObj?.printer_ip || (printerId && printerId.includes('.') ? printerId : '')).trim();
+      if (!printerIp || printerIp === '0.0.0.0') {
+        throw new Error(`Thiếu IP máy in hợp lệ cho ${normMac || printerId}!`);
+      }
+      const { user: authUser, pass: authPass } = await resolveCopierCredentials(printerObj || { mac_address: normMac, ip: printerIp });
 
       const extraPayload = {
         mac_address: normMac,
-        printer_ip: printerObj?.ip || '',
+        mac_id: normMac,
+        printer_ip: printerIp,
+        ip: printerIp,
         auth_user: authUser,
         auth_password: authPass,
       };
-      const res = await addEmailDestination(printerId, name.trim(), email, agentUid || undefined, extraPayload);
+      const res = await addEmailDestination(normMac || printerId, name.trim(), email, agentUid || undefined, extraPayload);
       if (deps.setPublicFtpLoading) deps.setPublicFtpLoading(false);
       if (setActiveModal) setActiveModal(null);
 
@@ -825,10 +918,10 @@ export const useAgentScanActions = (deps: any = {}) => {
       if (pollCommandStatus) {
         pollCommandStatus(
           res.command_id,
-          printerId,
+          normMac || printerId,
           async (_pollData: any) => {
             if (showToast) showToast('Tạo điểm scan', 'success');
-            handleRefetchAddressBook(printerId);
+            handleRefetchAddressBook(printerObj || printerId);
             if (fetchLanSitesData) await fetchLanSitesData();
           },
           (errorMsg: any) => {
@@ -839,7 +932,7 @@ export const useAgentScanActions = (deps: any = {}) => {
       }
     } catch (err: any) {
       if (deps.setPublicFtpLoading) deps.setPublicFtpLoading(false);
-      if (showToast) showToast('Tạo điểm scan thất bại', 'error');
+      if (showToast) showToast(`Tạo điểm scan thất bại: ${err.message || ''}`, 'error');
     }
   };
 
