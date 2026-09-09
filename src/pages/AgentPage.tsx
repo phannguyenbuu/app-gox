@@ -123,10 +123,33 @@ function safePathToken(value: string): string {
 
   const [inputIpDraft, setInputIpDraft] = useState(() => selectedPublicIp || '');
   const inputIpRef = useRef<HTMLInputElement>(null);
-
+  const fixedHeaderRef = useRef<HTMLDivElement>(null);
+  const [headerHeight, setHeaderHeight] = useState<number>(230);
   const [isDirectIpMode, setIsDirectIpMode] = useState(() => Boolean(targetInternalIp));
   const [internalIpDraft, setInternalIpDraft] = useState(() => targetInternalIp || '');
   const inputInternalIpRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const el = fixedHeaderRef.current;
+    if (!el) return;
+
+    const updateHeight = () => {
+      if (fixedHeaderRef.current) {
+        setHeaderHeight(fixedHeaderRef.current.offsetHeight);
+      }
+    };
+
+    updateHeight();
+
+    const resizeObserver = new ResizeObserver(updateHeight);
+    resizeObserver.observe(el);
+
+    window.addEventListener('resize', updateHeight);
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', updateHeight);
+    };
+  }, [isDirectIpMode]);
 
   useEffect(() => {
     setInputIpDraft(selectedPublicIp || '');
@@ -417,14 +440,26 @@ print("__PRINTER_INFO_JSON_END__")
       </div>
 
       {/* FIXED HEADER BLOCK */}
-      <div style={styles.fixedHeader}>
+      <div ref={fixedHeaderRef} style={styles.fixedHeader}>
         <div style={styles.header}>
           <h1 style={styles.title}>🛠️ Quản lý Mạng LAN</h1>
         </div>
 
         {/* Public IP LAN Input filter with Enter & Plane button */}
         <div style={styles.filterBar}>
-          <label style={styles.filterLabel}>🌐 IP Public LAN:</label>
+          <label
+            onClick={() => {
+              if (myClientIp) {
+                setInputIpDraft(myClientIp);
+                handleApplyPublicIp(myClientIp);
+                inputIpRef.current?.focus();
+              }
+            }}
+            style={{ ...styles.filterLabel, cursor: myClientIp ? 'pointer' : 'default' }}
+            title={myClientIp ? `Click để chọn IP Public mạng này: ${myClientIp}` : undefined}
+          >
+            🌐 IP Public LAN:
+          </label>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, maxWidth: '420px' }}>
             <div style={{ position: 'relative', flex: 1, display: 'flex', alignItems: 'center' }}>
               <input
@@ -432,6 +467,12 @@ print("__PRINTER_INFO_JSON_END__")
                 type="text"
                 value={inputIpDraft}
                 onChange={(e) => setInputIpDraft(e.target.value)}
+                onClick={() => {
+                  if (!inputIpDraft && myClientIp) {
+                    setInputIpDraft(myClientIp);
+                    handleApplyPublicIp(myClientIp);
+                  }
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     handleApplyPublicIp(inputIpDraft);
@@ -441,8 +482,8 @@ print("__PRINTER_INFO_JSON_END__")
                 style={{
                   width: '100%',
                   padding: !isDirectIpMode
-                    ? ((selectedPublicIp || inputIpDraft) ? '8px 74px 8px 12px' : '8px 42px 8px 12px')
-                    : ((selectedPublicIp || inputIpDraft) ? '8px 40px 8px 12px' : '8px 12px 8px 12px'),
+                    ? ((selectedPublicIp || inputIpDraft || myClientIp) ? '8px 74px 8px 12px' : '8px 42px 8px 12px')
+                    : ((selectedPublicIp || inputIpDraft || myClientIp) ? '8px 40px 8px 12px' : '8px 12px 8px 12px'),
                   fontSize: '0.88rem',
                   borderRadius: '8px',
                   border: '1px solid rgba(255, 255, 255, 0.2)',
@@ -453,19 +494,28 @@ print("__PRINTER_INFO_JSON_END__")
                   transition: 'padding 0.2s',
                 }}
               />
-              {(selectedPublicIp || inputIpDraft) && (
+              {(selectedPublicIp || inputIpDraft || myClientIp) && (
                 <button
                   onClick={() => {
-                    setInputIpDraft('');
-                    handleApplyPublicIp('');
+                    if (myClientIp && inputIpDraft !== myClientIp) {
+                      setInputIpDraft(myClientIp);
+                      handleApplyPublicIp(myClientIp);
+                    } else {
+                      setInputIpDraft('');
+                      handleApplyPublicIp('');
+                    }
                     inputIpRef.current?.focus();
                   }}
-                  title="Xóa IP Public"
+                  title={
+                    myClientIp && inputIpDraft !== myClientIp
+                      ? `Đặt về IP Public mạng này (${myClientIp})`
+                      : "Xóa IP Public"
+                  }
                   style={{
                     position: 'absolute',
                     right: !isDirectIpMode ? '40px' : '8px',
                     background: 'transparent',
-                    color: '#ef4444',
+                    color: (myClientIp && !inputIpDraft) ? '#38bdf8' : '#ef4444',
                     border: 'none',
                     boxShadow: 'none',
                     width: '24px',
@@ -481,19 +531,25 @@ print("__PRINTER_INFO_JSON_END__")
                     transition: 'all 0.2s',
                   }}
                 >
-                  ✕
+                  {(myClientIp && !inputIpDraft) ? '📍' : '✕'}
                 </button>
               )}
               {!isDirectIpMode && (
                 <button
                   onClick={async () => {
-                    if (inputIpDraft) {
-                      await handleApplyPublicIp(inputIpDraft);
+                    const targetIp = (inputIpDraft || '').trim();
+                    if (targetIp) {
+                      await handleApplyPublicIp(targetIp);
                     }
                     if (selectedLan) {
                       triggerLanScan(selectedLan, true);
-                    } else if (fetchLanSitesData) {
-                      fetchLanSitesData(true);
+                    } else {
+                      if (!targetIp && showToast) {
+                        showToast('Chưa có mạng LAN nào được kết nối. Vui lòng nhập IP Public!', 'warning', 3500);
+                      }
+                      if (fetchLanSitesData) {
+                        fetchLanSitesData(true);
+                      }
                     }
                   }}
                   title="Gửi & Kết nối IP Public (Enter)"
@@ -667,7 +723,7 @@ print("__PRINTER_INFO_JSON_END__")
       </div>
 
       {/* Content Area with Top Margin to avoid overlapping the fixed header */}
-      <div style={styles.scrollableContent}>
+      <div style={{ ...styles.scrollableContent, marginTop: `${headerHeight + 12}px` }}>
         {lanSitesLoading && (
           <div style={styles.loadingWrapper}>
             <LoadingSpinner size="md" />

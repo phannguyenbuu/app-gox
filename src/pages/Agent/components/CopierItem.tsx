@@ -36,8 +36,8 @@ export interface CopierItemProps {
   commandStatus: Record<string, any>;
   getDestinationStatus: (entry: any) => any;
   handleOpenStorageFiles: (lanUid: string, destVal: string) => void;
-  handleEditIP: (pId: string, entry: any) => void;
-  handleDeleteDest: (pId: string, entry: any) => void;
+  handleEditIP: (pTarget: any, entry: any) => void;
+  handleDeleteDest: (pTarget: any, entry: any) => void;
 }
 
 export function CopierItem({
@@ -82,10 +82,7 @@ export function CopierItem({
     setSelectedAgentForSync(defaultUid);
   }, [p, activeAgentUid, selectedAgentUid, onlineAgents]);
 
-  const isPending = commandStatus[p.id]?.isPending || false;
-  const statusMsg = commandStatus[p.id]?.message || '';
-
-  const macKey = p.mac_address || '';
+  const macKey = (p.mac_address || p.mac_id || '').toUpperCase().replace(/-/g, ':');
   const ipKey = p.ip || '';
   const idKey = String(p.id !== undefined && p.id !== null ? p.id : '');
 
@@ -93,6 +90,9 @@ export function CopierItem({
     (macKey && commandStatus?.[macKey]) ||
     (ipKey && commandStatus?.[ipKey]) ||
     (idKey && commandStatus?.[idKey]);
+
+  const isPending = Boolean(cmdStatusObj?.isPending || (p.id && commandStatus[p.id]?.isPending) || (macKey && commandStatus[macKey]?.isPending));
+  const statusMsg = cmdStatusObj?.message || (p.id && commandStatus[p.id]?.message) || '';
 
   const hasValidList = (obj: any) => obj && (Array.isArray(obj.address_list) || (obj.address_book_data && Array.isArray(obj.address_book_data.address_list)));
   const getObjTime = (obj: any) => {
@@ -117,7 +117,7 @@ export function CopierItem({
 
   const effectiveDrivers = (p.suggested_drivers && Array.isArray(p.suggested_drivers)) ? p.suggested_drivers : [];
 
-  const pKey = String(p.id !== undefined && p.id !== null ? p.id : (p.mac_id || p.mac_address || p.ip || 'copier'));
+  const pKey = macKey || ipKey || idKey || 'copier';
   const hasDrivers = true;
   const driversExpanded = Boolean(expandedDrivers[pKey] || (p.id !== undefined && expandedDrivers[p.id]) || (p.mac_id && expandedDrivers[p.mac_id]) || (p.mac_address && expandedDrivers[p.mac_address]) || (p.ip && expandedDrivers[p.ip]));
   const rawAddressList = (() => {
@@ -261,9 +261,9 @@ export function CopierItem({
 
   return (
                           <div
-                            key={p.id}
-                            id={`copier-card-${p.id}`}
-                            onClick={() => handleCopierClick(String(p.id))}
+                            key={macKey || p.id}
+                            id={`copier-card-${macKey || p.id}`}
+                            onClick={() => handleCopierClick(macKey || String(p.id))}
                             style={{ width: '100%' }}
                           >
                             <GlowCard>
@@ -735,14 +735,16 @@ export function CopierItem({
                                          }}
                                          placeholder="admin"
                                          autoComplete="new-password"
-                                         name={`printer_user_${p.id}`}
-                                         value={copierCredentials[p.id]?.user || ''}
-                                         onChange={(e) =>
+                                         name={`printer_user_${macKey || p.id}`}
+                                         value={(macKey && copierCredentials[macKey]?.user) || copierCredentials[p.id]?.user || ''}
+                                         onChange={(e) => {
+                                           const val = e.target.value;
                                            setCopierCredentials((prev) => ({
                                              ...prev,
-                                             [p.id]: { ...prev[p.id], user: e.target.value },
-                                           }))
-                                         }
+                                             ...(macKey ? { [macKey]: { ...prev[macKey], user: val } } : {}),
+                                             [p.id]: { ...prev[p.id], user: val },
+                                           }));
+                                         }}
                                        />
                                      </div>
 
@@ -764,14 +766,16 @@ export function CopierItem({
                                          }}
                                          placeholder="mật khẩu"
                                          autoComplete="new-password"
-                                         name={`printer_pass_${p.id}`}
-                                         value={copierCredentials[p.id]?.pass || ''}
-                                         onChange={(e) =>
+                                         name={`printer_pass_${macKey || p.id}`}
+                                         value={(macKey && copierCredentials[macKey]?.pass) || copierCredentials[p.id]?.pass || ''}
+                                         onChange={(e) => {
+                                           const val = e.target.value;
                                            setCopierCredentials((prev) => ({
                                              ...prev,
-                                             [p.id]: { ...prev[p.id], pass: e.target.value },
-                                           }))
-                                         }
+                                             ...(macKey ? { [macKey]: { ...prev[macKey], pass: val } } : {}),
+                                             [p.id]: { ...prev[p.id], pass: val },
+                                           }));
+                                         }}
                                        />
                                      </div>
                                    </div>
@@ -800,16 +804,16 @@ export function CopierItem({
                                          color: '#fff',
                                          fontSize: '0.82rem',
                                          fontWeight: 600,
-                                         cursor: saveAuthLoading[p.id] ? 'not-allowed' : 'pointer',
-                                         opacity: saveAuthLoading[p.id] ? 0.6 : 1
+                                         cursor: (macKey && saveAuthLoading[macKey]) || saveAuthLoading[p.id] ? 'not-allowed' : 'pointer',
+                                         opacity: (macKey && saveAuthLoading[macKey]) || saveAuthLoading[p.id] ? 0.6 : 1
                                        }}
-                                       disabled={saveAuthLoading[p.id]}
+                                       disabled={Boolean((macKey && saveAuthLoading[macKey]) || saveAuthLoading[p.id])}
                                        onClick={() => {
                                          handleSaveAuth(p);
                                          setShowAuthModal(false);
                                        }}
                                      >
-                                       {saveAuthLoading[p.id] ? 'Đang lưu...' : '💾 Lưu Auth'}
+                                       {(macKey && saveAuthLoading[macKey]) || saveAuthLoading[p.id] ? 'Đang lưu...' : '💾 Lưu Auth'}
                                      </button>
                                    </div>
                                  </motion.div>
