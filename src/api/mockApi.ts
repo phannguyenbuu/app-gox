@@ -212,7 +212,7 @@ export async function apiUploadIncidentImage(
   try {
     res = await fetch(`${PUBLIC_BASE_URL}/api/app-db/incidents/upload-image`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
       body: form,
     });
   } catch {
@@ -585,6 +585,7 @@ function mapIncidentTaskToRequest(task: any, workspace: any | null, profile: any
     progressNotes: mappedProgressNotes,
     materials: mappedMaterials,
     completionReport,
+    laborCost,
     contactPhone: undefined,
     createdAt: String(task.created_at || task.createAt || task.reported_at || task.updated_at || new Date().toISOString()),
     updatedAt: String(task.updated_at || task.updateAt || task.status_updated_at || task.created_at || new Date().toISOString()),

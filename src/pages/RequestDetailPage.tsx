@@ -12,6 +12,7 @@ import { AnimatedButton } from '../components/ui/AnimatedButton';
 import { AnimatedList } from '../components/ui/AnimatedList';
 import { PageLoading } from '../components/ui/PageState';
 import { GlowCard } from '../components/ui/GlowCard';
+import { ImageLightbox } from '../components/ui/ImageLightbox';
 import { WorkspaceBadge } from '../components/ui/WorkspaceBadge';
 import { validateMaterial } from '../services/validation';
 import type { Priority, RepairRequest, RepairStatus } from '../types/repair';
@@ -77,6 +78,7 @@ export function RequestDetailPage() {
   const [progressNote, setProgressNote] = useState('');
   const [noteImages, setNoteImages] = useState<string[]>([]);
   const [noteImagesUploading, setNoteImagesUploading] = useState(false);
+  const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [noteError, setNoteError] = useState('');
 
   // Material form
@@ -137,10 +139,11 @@ export function RequestDetailPage() {
   const canComplete = request?.status === 'in_progress';
   const canCancel = request?.status === 'new' && user?.role !== 'technician';
   const canManageMaterials = request?.status === 'in_progress';
-  const isParticipant = request != null && user != null && (
-    request.assignedTo === user.id || request.progressNotes.some((n) => n.createdBy === user.id)
-  );
-  const canJoin = canAddProgress && !isParticipant && user != null;
+  // Chỉ coi là "đã bắt đầu xử lý" khi đã thực sự viết ít nhất 1 ghi chú — không
+  // tính chỉ vì là người đã tiếp nhận (assignedTo), vì người đó vẫn cần nút
+  // "Tham gia sửa chữa" để bắt đầu (chuyển sang Đang xử lý) ngay sau khi tiếp nhận.
+  const hasStartedWork = request != null && user != null && request.progressNotes.some((n) => n.createdBy === user.id);
+  const canJoin = canAddProgress && !hasStartedWork && user != null;
 
   // Status timeline
   const timelineStatuses = useMemo(() => {
@@ -702,8 +705,8 @@ export function RequestDetailPage() {
                         key={i}
                         src={img}
                         alt={`Ảnh ghi chú ${i + 1}`}
-                        style={styles.noteImage}
-                        onClick={() => window.open(img, '_blank')}
+                        style={{ ...styles.noteImage, cursor: 'zoom-in' }}
+                        onClick={() => setLightboxImage(img)}
                       />
                     ))}
                   </div>
@@ -937,6 +940,8 @@ export function RequestDetailPage() {
           </span>
         </GlowCard>
       )}
+
+      <ImageLightbox src={lightboxImage} onClose={() => setLightboxImage(null)} />
     </motion.div>
   );
 }
