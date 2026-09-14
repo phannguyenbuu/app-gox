@@ -6,7 +6,7 @@ import type {
   Priority,
   Attachment,
 } from '../types/repair';
-import { apiIncidentAddNote, apiIncidentUpdateStatus, mockGetRequestById, mockGetRequests, mockCreateRequest, mockUpdateStatus } from '../api/mockApi';
+import { apiIncidentAddNote, apiIncidentUpdateStatus, apiIncidentUpdateAddress, mockGetRequestById, mockGetRequests, mockCreateRequest, mockUpdateStatus } from '../api/mockApi';
 import { validateRepairRequest, validateProgressNote } from '../services/validation';
 import { transitionStatus } from '../services/repairStateMachine';
 import { notifyStatusChange } from '../services/notificationService';
@@ -45,6 +45,10 @@ interface RepairStore {
     requestId: string,
     report: { description: string; attachments: Attachment[]; laborCost?: number },
   ) => Promise<{ success: boolean; error?: string }>;
+  updateAddress: (
+    requestId: string,
+    address: string,
+  ) => Promise<{ success: boolean; error?: string }>;
   setFilters: (filters: RepairRequestFilters) => void;
 }
 
@@ -58,11 +62,13 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
     const existing = get().requests.find((r) => r.id === requestId);
     if (existing) return existing;
 
-    const email = useAuthStore.getState().user?.email;
-    if (!email) return null;
+    const authState = useAuthStore.getState();
+    const email = authState.user?.email;
+    const token = authState.token;
+    if (!email || !token) return null;
 
     try {
-      const fetched = await mockGetRequestById(requestId, email);
+      const fetched = await mockGetRequestById(requestId, email, token);
       if (!fetched) return null;
       set((state) => {
         if (state.requests.some((r) => r.id === requestId)) return state;
@@ -137,12 +143,13 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
       const token = authState.token;
       let updated = result.request;
 
-      if (email && token && (newStatus === 'accepted' || newStatus === 'in_progress' || newStatus === 'completed')) {
+      if (email && token && (newStatus === 'accepted' || newStatus === 'in_progress' || newStatus === 'completed' || newStatus === 'cancelled')) {
         const now = new Date().toISOString();
         const statusSlug =
           newStatus === 'accepted' ? 'selected'
             : newStatus === 'in_progress' ? 'in-progress'
-              : 'done';
+              : newStatus === 'cancelled' ? 'cancelled'
+                : 'done';
 
         const note =
           typeof data?.note === 'string' ? data.note
@@ -150,12 +157,18 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
               : typeof data?.completionReport?.description === 'string' ? data.completionReport.description
                 : undefined;
 
+        const assigneeId =
+          typeof data?.assignedTo === 'string' && data.assignedTo.trim() !== '' && !Number.isNaN(Number(data.assignedTo))
+            ? Number(data.assignedTo)
+            : undefined;
+
         await apiIncidentUpdateStatus({
           email,
           task_id: String(requestId),
           status: statusSlug,
           note,
           join_repair: newStatus === 'accepted' ? true : undefined,
+          assignee_id: newStatus === 'accepted' ? assigneeId : undefined,
           completed_at: newStatus === 'completed' ? now : undefined,
         }, token);
 
@@ -225,6 +238,14 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
           images,
         }, token);
 
+        if (request.status !== targetStatus) {
+          await apiIncidentUpdateStatus({
+            email,
+            task_id: String(requestId),
+            status: 'in-progress',
+          }, token);
+        }
+
         const progressNote = {
           id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           note,
@@ -235,6 +256,7 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
 
         updated = {
           ...request,
+          status: targetStatus,
           progressNotes: [...request.progressNotes, progressNote],
           updatedAt: now,
         };
@@ -310,6 +332,30 @@ export const useRepairStore = create<RepairStore>((set, get) => ({
     } catch (e: any) {
       set({ error: e.message ?? 'Lỗi khi hoàn thành yêu cầu', loading: false });
       return { success: false, error: e.message ?? 'Lỗi khi hoàn thành yêu cầu' };
+    }
+  },
+
+  updateAddress: async (requestId, address) => {
+    const authState = useAuthStore.getState();
+    const email = authState.user?.email;
+    const token = authState.token;
+    if (!email || !token) {
+      return { success: false, error: 'Cần đăng nhập để cập nhật địa chỉ' };
+    }
+
+    set({ loading: true, error: null });
+    try {
+      await apiIncidentUpdateAddress({ email, task_id: String(requestId), address }, token);
+      set((state) => ({
+        requests: state.requests.map((r) =>
+          r.id === requestId ? { ...r, customerAddress: address.trim() || undefined } : r
+        ),
+        loading: false,
+      }));
+      return { success: true };
+    } catch (e: any) {
+      set({ error: e.message ?? 'Lỗi khi cập nhật địa chỉ', loading: false });
+      return { success: false, error: e.message ?? 'Lỗi khi cập nhật địa chỉ' };
     }
   },
 

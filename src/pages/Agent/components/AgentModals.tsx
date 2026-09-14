@@ -8,6 +8,8 @@ import { safePathToken } from '../utils/agentUtils';
 import { CopierItem } from './CopierItem';
 import { LoadingSpinner } from '../../../components/ui/LoadingSpinner';
 import { fetchApi } from '../../../api/mockAgentApi';
+import { verifyNetworkAccess, getMyLanSites } from '../../../api/mockApi';
+import { useAuthStore } from '../../../stores/authStore';
 
 const defaultFormatJsonText = (val: any) => {
   if (val === null || val === undefined) return '';
@@ -767,6 +769,11 @@ export function AgentModals(props: any) {
   const [inputPublicIp, setInputPublicIp] = React.useState('');
   const [isConnectingIp, setIsConnectingIp] = React.useState(false);
   const [ipErrorMsg, setIpErrorMsg] = React.useState('');
+  const [directOverrideReason, setDirectOverrideReason] = React.useState('');
+  const [availableSites, setAvailableSites] = React.useState<any[]>([]);
+  const [availableSitesLoading, setAvailableSitesLoading] = React.useState(false);
+  const [showSiteSelect, setShowSiteSelect] = React.useState(false);
+  const [selectedSiteLanUid, setSelectedSiteLanUid] = React.useState('');
   const formatJsonText = typeof propFormatJsonText === 'function' ? propFormatJsonText : defaultFormatJsonText;
 
   React.useEffect(() => {
@@ -814,6 +821,10 @@ export function AgentModals(props: any) {
     }
   }, [accessDeniedState?.isOpen, accessDeniedState?.ip]);
 
+  // Luôn thử Logic 1 (MAC tại IP này đã đăng ký CRM chưa) TRƯỚC — nếu khớp thì
+  // cấp quyền ngay, không cần lý do gì cả. Chỉ khi không khớp MAC nào (thật sự
+  // là IP lạ) mới bắt buộc nhập lý do và rơi xuống Logic 2/3 (mở trực tiếp tại
+  // điểm, tự duyệt/từ chối theo phiếu công việc active).
   const handleConnectWithPublicIp = async (targetIpOverride?: any) => {
     const targetIp = (typeof targetIpOverride === 'string' ? targetIpOverride : inputPublicIp || accessDeniedState?.ip || '').trim();
     if (!targetIp) {
@@ -823,34 +834,116 @@ export function AgentModals(props: any) {
     setIsConnectingIp(true);
     setIpErrorMsg('');
     try {
+      const token = useAuthStore.getState().token;
+
+      const matchedSite = (lanSites || []).find((s: any) => {
+        const pubIp = (s.public_ip || s.wan_ip || '').trim();
+        if (pubIp === targetIp) return true;
+        return (s.agents || []).some((ag: any) => (ag.public_ip || ag.wan_ip || ag.ip || '').trim() === targetIp);
+      });
+      const macsAtSite = matchedSite
+        ? (matchedSite.printers || []).map((p: any) => (p.mac_address || p.mac_id || '').trim()).filter(Boolean)
+        : [];
+
+      let result = await verifyNetworkAccess(token || '', {
+        macs: macsAtSite,
+        public_ip: targetIp,
+        request_type: 'lookup',
+      });
+
+      if (!result.ok || result.access !== 'full') {
+        if (!directOverrideReason.trim()) {
+          setIpErrorMsg('Không tìm thấy MAC nào khớp CRM tại IP này. Vui lòng nhập lý do để mở trực tiếp tại điểm.');
+          return;
+        }
+        result = await verifyNetworkAccess(token || '', {
+          public_ip: targetIp,
+          request_type: 'direct_override',
+          reason: directOverrideReason.trim(),
+        });
+      }
+
+      if (!result.ok || result.access !== 'full') {
+        setIpErrorMsg(result.error || 'Không được phép kết nối tới IP này');
+        return;
+      }
+
       localStorage.setItem('gox_connect_public_ip', targetIp);
       await fetchApi('/api/public-ips', {
         method: 'POST',
         body: JSON.stringify({
           ip_address: targetIp,
-          description: 'Allowed from App-Gox Modal',
+          description: 'Allowed from App-Gox Modal (verified)',
           enabled: true,
         }),
       }).catch((e) => console.log('Allowed IP API response:', e));
 
+      if (props.showToast) {
+        if (result.access_type === 'mac_verified') {
+          props.showToast('✔ MAC đã khớp CRM — cấp quyền ngay', 'success', 3000);
+        } else {
+          props.showToast(`✔ Đã duyệt tự động qua phiếu công việc #${result.auto_approved_via}`, 'success', 4000);
+        }
+      }
+      setDirectOverrideReason('');
+      if (props.setSelectedPublicIp) props.setSelectedPublicIp(targetIp);
       if (setAccessDeniedState) {
         setAccessDeniedState({ isOpen: false, ip: '' });
       }
       if (props.fetchLanSitesData) {
-        await props.fetchLanSitesData(true);
+        await props.fetchLanSitesData(true, targetIp, macsAtSite);
       }
     } catch (err: any) {
-      console.error('Error connecting public IP:', err);
-      // Always store override and proceed to connect
-      localStorage.setItem('gox_connect_public_ip', targetIp);
-      if (setAccessDeniedState) {
-        setAccessDeniedState({ isOpen: false, ip: '' });
-      }
-      if (props.fetchLanSitesData) {
-        await props.fetchLanSitesData(true);
-      }
+      console.error('Error verifying public IP access:', err);
+      setIpErrorMsg(err?.message || 'Lỗi không xác định khi kiểm tra quyền truy cập');
     } finally {
       setIsConnectingIp(false);
+    }
+  };
+
+  // Mở nhanh 1 mạng LAN đã có sẵn trong CRM (đã đăng ký máy in) thay vì bắt
+  // kỹ thuật tự gõ tay Public IP — IP hiện tại của mạng đó được resolve trực
+  // tiếp qua agentapi (xem NetworkController::lanInfo), luôn đúng dù ISP đổi IP.
+  const openLanSite = async (site: any) => {
+    const ip = site?.workstation?.public_ip;
+    if (!ip) {
+      showToast('Mạng LAN này chưa xác định được Public IP hiện tại', 'warning');
+      return;
+    }
+    const macs = (site.photocopy || []).map((p: any) => p.mac_address).filter(Boolean);
+    if (props.setSelectedPublicIp) props.setSelectedPublicIp(ip);
+    localStorage.setItem('goxprint_selected_public_ip', ip);
+    localStorage.setItem('gox_connect_public_ip', ip);
+    setShowSiteSelect(false);
+    if (setAccessDeniedState) setAccessDeniedState({ isOpen: false, ip: '' });
+    if (props.fetchLanSitesData) await props.fetchLanSitesData(true, ip, macs);
+  };
+
+  const handleOpenAvailableSites = async () => {
+    setAvailableSitesLoading(true);
+    try {
+      const token = useAuthStore.getState().token;
+      const result = await getMyLanSites(token || '');
+      if (!result.ok) {
+        showToast(result.error || 'Không lấy được danh sách mạng LAN', 'error');
+        return;
+      }
+      const sitesWithIp = result.sites.filter((s: any) => s?.workstation?.public_ip);
+      if (sitesWithIp.length === 0) {
+        showToast('Chưa có mạng LAN nào đã đăng ký sẵn sàng để mở', 'warning', 4000);
+        return;
+      }
+      if (sitesWithIp.length === 1) {
+        await openLanSite(sitesWithIp[0]);
+        return;
+      }
+      setAvailableSites(sitesWithIp);
+      setSelectedSiteLanUid(sitesWithIp[0].lan_uid);
+      setShowSiteSelect(true);
+    } catch (err: any) {
+      showToast(`Lỗi lấy danh sách mạng LAN: ${err.message}`, 'error');
+    } finally {
+      setAvailableSitesLoading(false);
     }
   };
 
@@ -2213,7 +2306,7 @@ export function AgentModals(props: any) {
                     type="text"
                     value={inputPublicIp}
                     onChange={(e) => setInputPublicIp(e.target.value)}
-                    placeholder="Ví dụ: 116.98.0.59 hoặc *"
+                    placeholder="Ví dụ: 116.98.0.59"
                     style={{
                       width: '100%',
                       padding: '10px 14px',
@@ -2227,9 +2320,100 @@ export function AgentModals(props: any) {
                     }}
                   />
                 </div>
+                <label style={{ fontSize: '0.8rem', fontWeight: 600, color: '#e5e7eb', display: 'block', margin: '12px 0 6px 0' }}>
+                  Lý do mở trực tiếp tại điểm (chỉ cần khi MAC chưa khớp CRM):
+                </label>
+                <textarea
+                  value={directOverrideReason}
+                  onChange={(e) => setDirectOverrideReason(e.target.value)}
+                  placeholder="Ví dụ: Đang xử lý sự cố tại địa chỉ khách hàng, chưa có MAC nào khớp CRM..."
+                  rows={2}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    fontSize: '0.85rem',
+                    borderRadius: '8px',
+                    border: '1px solid rgba(255,255,255,0.2)',
+                    background: 'rgba(0,0,0,0.4)',
+                    color: '#fff',
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                    resize: 'vertical',
+                    fontFamily: 'inherit',
+                  }}
+                />
                 {ipErrorMsg && (
                   <div style={{ fontSize: '0.78rem', color: '#ef4444', marginTop: '6px' }}>
                     ⚠️ {ipErrorMsg}
+                  </div>
+                )}
+              </div>
+
+              {/* Mở nhanh 1 mạng LAN đã có sẵn trong CRM, không cần gõ tay IP */}
+              <div style={{ marginBottom: '4px' }}>
+                <button
+                  onClick={handleOpenAvailableSites}
+                  disabled={availableSitesLoading}
+                  style={{
+                    width: '100%',
+                    padding: '9px 16px',
+                    fontSize: '0.82rem',
+                    fontWeight: 600,
+                    background: 'rgba(59, 130, 246, 0.12)',
+                    color: '#60a5fa',
+                    border: '1px solid rgba(59, 130, 246, 0.4)',
+                    borderRadius: '8px',
+                    cursor: availableSitesLoading ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                  }}
+                >
+                  {availableSitesLoading ? <LoadingSpinner size="sm" /> : '📋 Mở IP có sẵn'}
+                </button>
+
+                {showSiteSelect && (
+                  <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                    <select
+                      value={selectedSiteLanUid}
+                      onChange={(e) => setSelectedSiteLanUid(e.target.value)}
+                      style={{
+                        flex: 1,
+                        padding: '9px 10px',
+                        fontSize: '0.82rem',
+                        borderRadius: '8px',
+                        border: '1px solid rgba(255,255,255,0.2)',
+                        background: 'rgba(0,0,0,0.4)',
+                        color: '#fff',
+                        outline: 'none',
+                      }}
+                    >
+                      {availableSites.map((s: any) => (
+                        <option key={s.lan_uid} value={s.lan_uid}>
+                          {s.label} — {s.workstation?.public_ip} ({s.printer_count} máy)
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={() => {
+                        const site = availableSites.find((s: any) => s.lan_uid === selectedSiteLanUid);
+                        if (site) openLanSite(site);
+                      }}
+                      style={{
+                        padding: '9px 14px',
+                        fontSize: '0.82rem',
+                        fontWeight: 600,
+                        background: '#3b82f6',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '8px',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      Mở
+                    </button>
                   </div>
                 )}
               </div>
@@ -2256,7 +2440,7 @@ export function AgentModals(props: any) {
                     boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)'
                   }}
                 >
-                  {isConnectingIp ? <LoadingSpinner size="sm" /> : 'Kết nối Public IP'}
+                  {isConnectingIp ? <LoadingSpinner size="sm" /> : 'Kiểm tra quyền & Kết nối'}
                 </button>
 
                 <button

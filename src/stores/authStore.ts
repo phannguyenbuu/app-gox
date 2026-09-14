@@ -61,6 +61,13 @@ function generateToken(userId: string): string {
 function saveSession(token: string, user: User, expiresAt: number): void {
   const session: AuthSession = { token, user, expiresAt };
   localStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(session));
+  // Xoá IP/LAN đã chọn của phiên trước — các key này lưu theo trình duyệt,
+  // không theo tài khoản, nên nếu không xoá thì đổi tài khoản trên cùng máy
+  // vẫn mang theo IP của tài khoản/khách hàng cũ (không liên quan gì tới
+  // tài khoản mới vừa đăng nhập).
+  ['goxprint_selected_public_ip', 'gox_connect_public_ip', 'goxprint_selected_lan_uid', 'goxprint_target_internal_ip'].forEach((k) =>
+    localStorage.removeItem(k)
+  );
 }
 
 function loadSession(): AuthSession | null {

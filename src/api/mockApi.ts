@@ -111,6 +111,7 @@ export async function apiIncidentUpdateStatus(payload: {
   status: string;
   note?: string;
   join_repair?: boolean;
+  assignee_id?: number;
   completed_at?: string;
   completion_note?: string;
   labor_cost?: number;
@@ -192,6 +193,39 @@ export async function apiIncidentUpdateStatus(payload: {
   throw new Error('Agent API không phản hồi');
 }
 
+// Upload 1 ảnh đính kèm ghi chú tiến độ lên S3, trả về URL công khai — dùng
+// URL này khi gọi apiIncidentAddNote() thay vì gửi thẳng base64 (base64 luôn
+// dài hơn 2048 ký tự nên bị backend validate chặn: "images.0 field must not
+// be greater than 2048 characters").
+export async function apiUploadIncidentImage(
+  email: string,
+  taskId: string,
+  file: File,
+  token: string
+): Promise<{ success: boolean; url?: string; error?: string }> {
+  const form = new FormData();
+  form.append('email', email);
+  form.append('task_id', taskId);
+  form.append('image', file);
+
+  let res: Response;
+  try {
+    res = await fetch(`${PUBLIC_BASE_URL}/api/app-db/incidents/upload-image`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      body: form,
+    });
+  } catch {
+    return { success: false, error: 'Không thể kết nối tới máy chủ' };
+  }
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data?.url) {
+    return { success: false, error: String(data?.message || 'Tải ảnh lên thất bại') };
+  }
+  return { success: true, url: String(data.url) };
+}
+
 export async function apiIncidentAddNote(payload: {
   email: string;
   task_id: string;
@@ -251,6 +285,64 @@ export async function apiIncidentAddNote(payload: {
     success: Boolean(data?.success),
     message: String(data?.message || ''),
     note: data?.note ?? null,
+  };
+}
+
+export async function apiIncidentUpdateAddress(payload: {
+  email: string;
+  task_id: string;
+  address: string;
+}, token: string): Promise<{
+  success: boolean;
+  message: string;
+  task: any | null;
+}> {
+  const url = `${PUBLIC_BASE_URL}/api/app-db/incidents/update-address`;
+
+  let res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  let data = await res.json().catch(() => ({}));
+  const isBodyNotParsed =
+    res.status === 422
+    && typeof data?.message === 'string'
+    && data.message.includes('required')
+    && data?.errors?.email
+    && data?.errors?.task_id
+    && data?.errors?.address;
+
+  if (isBodyNotParsed) {
+    const body = new URLSearchParams();
+    body.set('email', payload.email);
+    body.set('task_id', payload.task_id);
+    body.set('address', payload.address);
+
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      },
+      body: body.toString(),
+    });
+    data = await res.json().catch(() => ({}));
+  }
+
+  if (!res.ok) {
+    throw new Error(data.message || data.error || `HTTP error! status: ${res.status}`);
+  }
+
+  return {
+    success: Boolean(data?.success),
+    message: String(data?.message || ''),
+    task: data?.task ?? null,
   };
 }
 
@@ -320,6 +412,56 @@ export async function apiIncidentAddMaterial(payload: {
   };
 }
 
+export async function apiIncidentUpdateMaterial(payload: {
+  email: string;
+  material_id: number;
+  material_name?: string;
+  quantity?: number;
+  unit_price?: number;
+  unit?: string;
+  note?: string;
+}, token: string): Promise<{ success: boolean; message: string; material?: any | null }> {
+  const res = await fetch(`${PUBLIC_BASE_URL}/api/app-db/incidents/update-material`, {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return { success: false, message: String(data?.message || `HTTP error! status: ${res.status}`) };
+  }
+  return {
+    success: Boolean(data?.success),
+    message: String(data?.message || ''),
+    material: data?.material ?? null,
+  };
+}
+
+export async function apiIncidentDeleteMaterial(
+  email: string,
+  materialId: number,
+  token: string
+): Promise<{ success: boolean; message: string }> {
+  const res = await fetch(`${PUBLIC_BASE_URL}/api/app-db/incidents/delete-material`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ email, material_id: materialId }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return { success: false, message: String(data?.message || `HTTP error! status: ${res.status}`) };
+  }
+  return { success: Boolean(data?.success), message: String(data?.message || '') };
+}
+
 function mapTaskStatus(status: string): RepairStatus {
   switch (status) {
     case 'backlog':
@@ -378,7 +520,7 @@ function mapIncidentTaskToRequest(task: any, workspace: any | null, profile: any
     task.customer_email || profile?.email || ''
   ).trim() || undefined;
   const customerAddress = String(
-    task.customer_address || workspace?.address || profile?.address || ''
+    task.address || task.customer_address || workspace?.address || profile?.address || ''
   ).trim() || undefined;
 
   const assignedTo = task.assignee_id != null && String(task.assignee_id).trim() !== ''
@@ -443,6 +585,7 @@ function mapIncidentTaskToRequest(task: any, workspace: any | null, profile: any
     progressNotes: mappedProgressNotes,
     materials: mappedMaterials,
     completionReport,
+    laborCost,
     contactPhone: undefined,
     createdAt: String(task.created_at || task.createAt || task.reported_at || task.updated_at || new Date().toISOString()),
     updatedAt: String(task.updated_at || task.updateAt || task.status_updated_at || task.created_at || new Date().toISOString()),
@@ -531,6 +674,34 @@ export async function apiLogin(email: string, password: string): Promise<{
   };
 }
 
+export interface KnownLanSite {
+  lan_uid: string;
+  label: string;
+  printer_count: number;
+  workstation: { public_ip?: string; hostname?: string; is_online?: boolean } | null;
+}
+
+// Danh sách mạng LAN đã biết (có máy in đăng ký trong CRM) của công ty đang
+// đăng nhập — dùng để gợi ý IP Public có sẵn thay vì bắt kỹ thuật tự gõ tay.
+export async function getMyLanSites(token: string): Promise<{ ok: boolean; sites: KnownLanSite[]; error?: string }> {
+  let res: Response;
+  try {
+    res = await fetch(`${PUBLIC_BASE_URL}/api/company/network/lan-info`, {
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+    });
+  } catch {
+    return { ok: false, sites: [], error: 'Không thể kết nối tới máy chủ' };
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return { ok: false, sites: [], error: String(data?.error || 'Không lấy được danh sách mạng LAN') };
+  }
+  return { ok: true, sites: Array.isArray(data?.data) ? data.data : [] };
+}
+
 // Lấy thông tin người dùng hiện tại từ JWT vừa cấp — dùng để dựng session và để
 // xác nhận token còn hợp lệ (server-side), thay vì tin tưởng dữ liệu client tự tạo.
 export async function apiMe(token: string): Promise<{ success: boolean; profile: any | null }> {
@@ -549,6 +720,50 @@ export async function apiMe(token: string): Promise<{ success: boolean; profile:
   if (!res.ok) return { success: false, profile: null };
   const data = await res.json().catch(() => ({}));
   return { success: true, profile: data?.data ?? null };
+}
+
+export interface NetworkAccessResult {
+  ok: boolean;
+  access?: 'full';
+  access_type?: 'mac_verified' | 'auto_approved_task' | 'direct_override';
+  lan_uid?: string;
+  public_ip?: string;
+  agent_uid?: string;
+  auto_approved_via?: number;
+  printer?: { id: number; name: string; mac_address: string };
+  error?: string;
+}
+
+// Kiểm tra quyền remote vào 1 mạng LAN — thay cho việc tự cấp quyền chỉ vì
+// người dùng gõ tay 1 Public IP. Backend (CRM) đối chiếu MAC với dữ liệu
+// khách hàng/hợp đồng (Logic 1), hoặc tự động duyệt/từ chối dựa trên việc kỹ
+// thuật viên có phiếu công việc đang xử lý hay không (Logic 2 & 3).
+export async function verifyNetworkAccess(token: string, payload: {
+  macs?: string[];
+  public_ip?: string;
+  request_type: 'lookup' | 'direct_override';
+  reason?: string;
+}): Promise<NetworkAccessResult> {
+  let res: Response;
+  try {
+    res = await fetch(`${PUBLIC_BASE_URL}/api/company/network/verify-access`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    return { ok: false, error: 'Không thể kết nối tới máy chủ. Vui lòng thử lại.' };
+  }
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return { ok: false, error: String(data?.error || 'Không được phép kết nối') };
+  }
+  return { ok: true, ...data };
 }
 
 // Thu hồi token phía server (blacklist) khi đăng xuất — best-effort, không chặn UI logout.
@@ -739,8 +954,9 @@ export async function mockGetRequests(
 export async function mockGetRequestById(
   id: string,
   email?: string,
+  token?: string,
 ): Promise<RepairRequest | null> {
-  const requests = await mockGetRequests(undefined, email);
+  const requests = await mockGetRequests(undefined, email, token);
   return requests.find((r) => r.id === id) ?? null;
 }
 

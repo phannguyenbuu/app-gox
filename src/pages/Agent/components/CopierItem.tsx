@@ -5,6 +5,8 @@ import { styles } from '../AgentStyles';
 import { GlowCard } from '../../../components/ui/GlowCard';
 import { ScanDestinations } from './ScanDestinations';
 import { fetchApi, triggerAgentUtilityExec } from '../../../api/mockAgentApi';
+import { verifyNetworkAccess } from '../../../api/mockApi';
+import { useAuthStore } from '../../../stores/authStore';
 
 export interface CopierItemProps {
   handleRefetchAddressBook: (pTarget: any) => void;
@@ -38,6 +40,7 @@ export interface CopierItemProps {
   handleOpenStorageFiles: (lanUid: string, destVal: string) => void;
   handleEditIP: (pTarget: any, entry: any) => void;
   handleDeleteDest: (pTarget: any, entry: any) => void;
+  handleStartToshibaVnc?: (printerIp: string, printerName: string, agentUid: string) => void;
 }
 
 export function CopierItem({
@@ -72,10 +75,12 @@ export function CopierItem({
   setExpandedDriverMenus,
   handleRemoteInstallDriver,
   setPublicFtpData,
+  handleStartToshibaVnc,
 }: CopierItemProps) {
   const [showSelectAgentModal, setShowSelectAgentModal] = React.useState(false);
   const [showAuthModal, setShowAuthModal] = React.useState(false);
   const [selectedAgentForSync, setSelectedAgentForSync] = React.useState<string>('');
+  const [vncCheckLoading, setVncCheckLoading] = React.useState(false);
 
   React.useEffect(() => {
     const defaultUid = p?.agent_uid || activeAgentUid || selectedAgentUid || '';
@@ -491,12 +496,38 @@ export function CopierItem({
   
                               {pType.includes('toshiba') && (
                                 <button
-                                  style={{ ...styles.smallBtn, flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '8px 12px', display: 'flex', alignItems: 'center', borderColor: '#a78bfa', color: '#a78bfa', opacity: 0.5, cursor: 'not-allowed' }}
-                                  onClick={() => showToast('Tính năng này đang được khóa', 'info')}
-                                  disabled={true}
-                                  title="Tính năng đang khóa"
+                                  style={{ ...styles.smallBtn, flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '8px 12px', display: 'flex', alignItems: 'center', borderColor: '#a78bfa', color: '#a78bfa', opacity: vncCheckLoading ? 0.6 : 1, cursor: vncCheckLoading ? 'not-allowed' : 'pointer' }}
+                                  disabled={vncCheckLoading}
+                                  onClick={async () => {
+                                    const targetAgent = selectedAgentUid || p.agent_uid || activeAgentUid || (selectedLan?.agents?.[0]?.agent_uid) || '';
+                                    if (!targetAgent) {
+                                      showToast('Không tìm thấy Agent nào trong dải mạng LAN này', 'error');
+                                      return;
+                                    }
+                                    const mac = (p.mac_address || p.mac_id || '').trim();
+                                    setVncCheckLoading(true);
+                                    try {
+                                      const token = useAuthStore.getState().token;
+                                      const result = await verifyNetworkAccess(token || '', {
+                                        macs: mac ? [mac] : [],
+                                        request_type: 'lookup',
+                                      });
+                                      if (!result.ok || result.access !== 'full') {
+                                        showToast(`❌ ${result.error || 'Không được phép remote vào máy in này'}`, 'error', 4000);
+                                        return;
+                                      }
+                                      if (handleStartToshibaVnc) {
+                                        handleStartToshibaVnc(p.ip, p.name || p.printer_name || 'Toshiba', targetAgent);
+                                      }
+                                    } catch (err: any) {
+                                      showToast(`Lỗi kiểm tra quyền: ${err.message}`, 'error');
+                                    } finally {
+                                      setVncCheckLoading(false);
+                                    }
+                                  }}
+                                  title="Xem & điều khiển màn hình cảm ứng máy in từ xa"
                                 >
-                                  🔒 VNC Remote
+                                  {vncCheckLoading ? '⏳ Đang kiểm tra...' : '📺 VNC Remote'}
                                 </button>
                               )}
                             </div>

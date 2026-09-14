@@ -4,7 +4,7 @@ import { motion } from 'framer-motion';
 import { useRepairStore } from '../stores/repairStore';
 import { useAuthStore } from '../stores/authStore';
 import { useMaterialStore } from '../stores/materialStore';
-import { mockGetRequestById, mockGetUserName, mockGetUserPhone } from '../api/mockApi';
+import { mockGetUserName, mockGetUserPhone, apiUploadIncidentImage, apiIncidentAddMaterial, apiIncidentUpdateMaterial, apiIncidentDeleteMaterial } from '../api/mockApi';
 import { useLocationStore } from '../stores/locationStore';
 import { PriorityBadge } from '../components/requests/PriorityBadge';
 import { StatusBadge } from '../components/requests/StatusBadge';
@@ -12,6 +12,7 @@ import { AnimatedButton } from '../components/ui/AnimatedButton';
 import { AnimatedList } from '../components/ui/AnimatedList';
 import { PageLoading } from '../components/ui/PageState';
 import { GlowCard } from '../components/ui/GlowCard';
+import { ImageLightbox } from '../components/ui/ImageLightbox';
 import { WorkspaceBadge } from '../components/ui/WorkspaceBadge';
 import { validateMaterial } from '../services/validation';
 import type { Priority, RepairRequest, RepairStatus } from '../types/repair';
@@ -56,11 +57,15 @@ function formatCurrency(amount: number): string {
   return amount.toLocaleString('vi-VN') + ' ₫';
 }
 
+function isMapLink(value: string): boolean {
+  return /^https?:\/\//i.test(value.trim());
+}
+
 export function RequestDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
-  const { requests, updateStatus, addProgressNote, completeRequest } = useRepairStore();
+  const { requests, ensureRequestLoaded, updateStatus, addProgressNote, completeRequest, updateAddress } = useRepairStore();
   const { materials, totalCost, setMaterials, addMaterial, updateMaterial, removeMaterial } = useMaterialStore();
   const { locations, fetchLocations } = useLocationStore();
 
@@ -72,6 +77,8 @@ export function RequestDetailPage() {
   // Progress note form
   const [progressNote, setProgressNote] = useState('');
   const [noteImages, setNoteImages] = useState<string[]>([]);
+  const [noteImagesUploading, setNoteImagesUploading] = useState(false);
+  const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [noteError, setNoteError] = useState('');
 
   // Material form
@@ -86,6 +93,12 @@ export function RequestDetailPage() {
   const [reportLaborCost, setReportLaborCost] = useState('');
   const [reportError, setReportError] = useState('');
 
+  // Customer address form
+  const [isEditingAddress, setIsEditingAddress] = useState(false);
+  const [addressInput, setAddressInput] = useState('');
+  const [addressLoading, setAddressLoading] = useState(false);
+  const [addressError, setAddressError] = useState('');
+
   // Fetch request data
   useEffect(() => {
     fetchLocations();
@@ -93,7 +106,7 @@ export function RequestDetailPage() {
       if (!id) return;
       setLoading(true);
       try {
-        const data = await mockGetRequestById(id);
+        const data = await ensureRequestLoaded(id);
         if (data) {
           setRequest(data);
           setMaterials(data.materials ?? []);
@@ -103,7 +116,7 @@ export function RequestDetailPage() {
       }
     }
     loadRequest();
-  }, [id, setMaterials]);
+  }, [id, setMaterials, ensureRequestLoaded]);
 
   // Resolve location info
   const requestLocation = useMemo(() => {
@@ -126,8 +139,11 @@ export function RequestDetailPage() {
   const canComplete = request?.status === 'in_progress';
   const canCancel = request?.status === 'new' && user?.role !== 'technician';
   const canManageMaterials = request?.status === 'in_progress';
-  const isParticipant = request?.assignedTo === user?.id;
-  const canJoin = canAddProgress && !isParticipant && user != null;
+  // Chỉ coi là "đã bắt đầu xử lý" khi đã thực sự viết ít nhất 1 ghi chú — không
+  // tính chỉ vì là người đã tiếp nhận (assignedTo), vì người đó vẫn cần nút
+  // "Tham gia sửa chữa" để bắt đầu (chuyển sang Đang xử lý) ngay sau khi tiếp nhận.
+  const hasStartedWork = request != null && user != null && request.progressNotes.some((n) => n.createdBy === user.id);
+  const canJoin = canAddProgress && !hasStartedWork && user != null;
 
   // Status timeline
   const timelineStatuses = useMemo(() => {
@@ -196,24 +212,34 @@ export function RequestDetailPage() {
     setActionLoading(false);
   }, [request, user, progressNote, noteImages, addProgressNote]);
 
-  const handleNoteImageUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleNoteImageUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (!files) return;
-    Array.from(files).forEach((file) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        setNoteImages((prev) => [...prev, reader.result as string]);
-      };
-      reader.readAsDataURL(file);
-    });
+    if (!files || !request || !user?.email) return;
+    const fileList = Array.from(files);
     e.target.value = '';
-  }, []);
+
+    setNoteError('');
+    setNoteImagesUploading(true);
+    try {
+      const token = useAuthStore.getState().token || '';
+      for (const file of fileList) {
+        const result = await apiUploadIncidentImage(user.email, String(request.id), file, token);
+        if (result.success && result.url) {
+          setNoteImages((prev) => [...prev, result.url as string]);
+        } else {
+          setNoteError(result.error || 'Tải ảnh lên thất bại');
+        }
+      }
+    } finally {
+      setNoteImagesUploading(false);
+    }
+  }, [request, user]);
 
   const handleRemoveNoteImage = useCallback((index: number) => {
     setNoteImages((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
-  const handleAddMaterial = useCallback(() => {
+  const handleAddMaterial = useCallback(async () => {
     setMaterialErrors([]);
     const qty = Number(materialQuantity);
     const price = Number(materialUnitPrice);
@@ -240,6 +266,26 @@ export function RequestDetailPage() {
         return;
       }
       setEditingMaterialId(null);
+
+      // Đồng bộ sửa thật vào DB qua /incidents/update-material.
+      const materialIdNum = Number(editingMaterialId);
+      if (request && user?.email && !Number.isNaN(materialIdNum)) {
+        try {
+          const token = useAuthStore.getState().token || '';
+          const apiResult = await apiIncidentUpdateMaterial({
+            email: user.email,
+            material_id: materialIdNum,
+            material_name: materialName.trim(),
+            quantity: qty,
+            unit_price: Number.isNaN(price) ? undefined : price,
+          }, token);
+          if (!apiResult.success) {
+            setMaterialErrors([apiResult.message || 'Cập nhật vật tư vào hệ thống thất bại']);
+          }
+        } catch (err: any) {
+          setMaterialErrors([err?.message || 'Cập nhật vật tư vào hệ thống thất bại']);
+        }
+      }
     } else {
       const result = addMaterial({
         repairRequestId: request?.id ?? '',
@@ -251,12 +297,41 @@ export function RequestDetailPage() {
         setMaterialErrors([result.error ?? 'Lỗi khi thêm vật tư']);
         return;
       }
+
+      // Lưu thật vào DB qua API /incidents/add-material — trước đây chỉ lưu
+      // vào state cục bộ (Zustand), mất khi tải lại trang / đổi thiết bị.
+      if (request && user?.email) {
+        try {
+          const token = useAuthStore.getState().token || '';
+          const apiResult = await apiIncidentAddMaterial({
+            email: user.email,
+            task_id: String(request.id),
+            material_name: materialName.trim(),
+            quantity: qty,
+            unit: '',
+            unit_price: Number.isNaN(price) ? undefined : price,
+          }, token);
+          if (!apiResult.success) {
+            setMaterialErrors([apiResult.message || 'Lưu vật tư vào hệ thống thất bại']);
+          } else if (apiResult.material?.id != null) {
+            // Thay id tạm (sinh cục bộ) bằng id thật từ server — để sửa/xoá
+            // ngay trong phiên này gửi đúng material_id, không bị 404.
+            const current = useMaterialStore.getState().materials;
+            const withRealId = current.map((m, idx) =>
+              idx === current.length - 1 ? { ...m, id: String(apiResult.material.id) } : m
+            );
+            setMaterials(withRealId);
+          }
+        } catch (err: any) {
+          setMaterialErrors([err?.message || 'Lưu vật tư vào hệ thống thất bại']);
+        }
+      }
     }
 
     setMaterialName('');
     setMaterialQuantity('');
     setMaterialUnitPrice('');
-  }, [materialName, materialQuantity, materialUnitPrice, editingMaterialId, request, addMaterial, updateMaterial]);
+  }, [materialName, materialQuantity, materialUnitPrice, editingMaterialId, request, user, addMaterial, updateMaterial, setMaterials]);
 
   const handleEditMaterial = useCallback((mat: { id: string; name: string; quantity: number; unitPrice: number }) => {
     setEditingMaterialId(mat.id);
@@ -266,9 +341,22 @@ export function RequestDetailPage() {
     setMaterialErrors([]);
   }, []);
 
-  const handleRemoveMaterial = useCallback((matId: string) => {
+  const handleRemoveMaterial = useCallback(async (matId: string) => {
     removeMaterial(matId);
-  }, [removeMaterial]);
+
+    const materialIdNum = Number(matId);
+    if (user?.email && !Number.isNaN(materialIdNum)) {
+      try {
+        const token = useAuthStore.getState().token || '';
+        const apiResult = await apiIncidentDeleteMaterial(user.email, materialIdNum, token);
+        if (!apiResult.success) {
+          setMaterialErrors([apiResult.message || 'Xoá vật tư khỏi hệ thống thất bại']);
+        }
+      } catch (err: any) {
+        setMaterialErrors([err?.message || 'Xoá vật tư khỏi hệ thống thất bại']);
+      }
+    }
+  }, [removeMaterial, user]);
 
   const handleCancelEdit = useCallback(() => {
     setEditingMaterialId(null);
@@ -304,6 +392,30 @@ export function RequestDetailPage() {
     }
     setActionLoading(false);
   }, [request, reportDescription, reportLaborCost, completeRequest]);
+
+  const handleStartEditAddress = useCallback(() => {
+    setAddressInput(request?.customerAddress ?? '');
+    setAddressError('');
+    setIsEditingAddress(true);
+  }, [request]);
+
+  const handleCancelEditAddress = useCallback(() => {
+    setIsEditingAddress(false);
+    setAddressError('');
+  }, []);
+
+  const handleSaveAddress = useCallback(async () => {
+    if (!request) return;
+    setAddressError('');
+    setAddressLoading(true);
+    const result = await updateAddress(request.id, addressInput.trim());
+    setAddressLoading(false);
+    if (result.success) {
+      setIsEditingAddress(false);
+    } else {
+      setAddressError(result.error ?? 'Lỗi khi lưu địa chỉ');
+    }
+  }, [request, addressInput, updateAddress]);
 
   if (loading) {
     return <PageLoading message="Đang tải chi tiết yêu cầu..." />;
@@ -364,6 +476,61 @@ export function RequestDetailPage() {
             )}
           </div>
         )}
+
+        {/* Customer address (editable, or Google Maps link) */}
+        <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--color-surface-light)' }}>
+          {isEditingAddress ? (
+            <div style={{ display: 'flex', flexDirection: 'column' as const, gap: '6px' }}>
+              <label htmlFor="customerAddress" style={styles.label}>
+                Địa chỉ khách hàng (nhập địa chỉ hoặc dán link Google Maps)
+              </label>
+              <input
+                id="customerAddress"
+                type="text"
+                value={addressInput}
+                onChange={(e) => setAddressInput(e.target.value)}
+                placeholder="Nhập địa chỉ hoặc dán link Google Maps"
+                style={styles.input}
+                disabled={addressLoading}
+              />
+              {addressError && (
+                <motion.span style={styles.errorText} initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}>
+                  {addressError}
+                </motion.span>
+              )}
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <AnimatedButton onClick={handleSaveAddress} disabled={addressLoading}>
+                  Lưu địa chỉ
+                </AnimatedButton>
+                <AnimatedButton onClick={handleCancelEditAddress} variant="secondary" disabled={addressLoading}>
+                  Hủy
+                </AnimatedButton>
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' }}>
+              {request.customerAddress ? (
+                isMapLink(request.customerAddress) ? (
+                  <a
+                    href={request.customerAddress}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: 'var(--color-primary)', fontSize: '0.85rem', textDecoration: 'none' }}
+                  >
+                    🗺️ Xem địa chỉ trên Google Maps
+                  </a>
+                ) : (
+                  <span style={styles.metaText}>🏠 {request.customerAddress}</span>
+                )
+              ) : (
+                <span style={styles.metaText}>Chưa có địa chỉ khách hàng</span>
+              )}
+              <button style={styles.iconButton} onClick={handleStartEditAddress} aria-label="Sửa địa chỉ khách hàng">
+                ✏️
+              </button>
+            </div>
+          )}
+        </div>
       </GlowCard>
 
       {/* Assignee Info */}
@@ -538,8 +705,8 @@ export function RequestDetailPage() {
                         key={i}
                         src={img}
                         alt={`Ảnh ghi chú ${i + 1}`}
-                        style={styles.noteImage}
-                        onClick={() => window.open(img, '_blank')}
+                        style={{ ...styles.noteImage, cursor: 'zoom-in' }}
+                        onClick={() => setLightboxImage(img)}
                       />
                     ))}
                   </div>
@@ -565,15 +732,15 @@ export function RequestDetailPage() {
 
             {/* Image upload */}
             <div>
-              <label style={styles.uploadLabel}>
-                📷 Thêm ảnh
+              <label style={{ ...styles.uploadLabel, opacity: noteImagesUploading ? 0.6 : 1 }}>
+                {noteImagesUploading ? '⏳ Đang tải ảnh lên...' : '📷 Thêm ảnh'}
                 <input
                   type="file"
                   accept="image/*"
                   multiple
                   onChange={handleNoteImageUpload}
                   style={{ display: 'none' }}
-                  disabled={actionLoading}
+                  disabled={actionLoading || noteImagesUploading}
                 />
               </label>
             </div>
@@ -773,6 +940,8 @@ export function RequestDetailPage() {
           </span>
         </GlowCard>
       )}
+
+      <ImageLightbox src={lightboxImage} onClose={() => setLightboxImage(null)} />
     </motion.div>
   );
 }

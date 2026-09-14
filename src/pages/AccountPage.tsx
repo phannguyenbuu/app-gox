@@ -200,9 +200,21 @@ function ActivityItem({ entry, locName, onClick }: {
           📍 {locName} · {formatDate(entry.date)}
         </span>
         {entry.status === 'completed' && (entry.laborCost != null || entry.materialCost > 0) && (
-          <span style={{ fontSize: '0.75rem', color: 'var(--color-accent)', fontWeight: 600 }}>
-            {formatCurrency((entry.laborCost ?? 0) + entry.materialCost)}
-          </span>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 1 }}>
+            {entry.laborCost != null && entry.laborCost > 0 && (
+              <span style={{ fontSize: '0.68rem', color: 'var(--color-text-secondary)' }}>
+                Công thợ: {formatCurrency(entry.laborCost)}
+              </span>
+            )}
+            {entry.materialCost > 0 && (
+              <span style={{ fontSize: '0.68rem', color: 'var(--color-text-secondary)' }}>
+                Vật tư: {formatCurrency(entry.materialCost)}
+              </span>
+            )}
+            <span style={{ fontSize: '0.78rem', color: 'var(--color-accent)', fontWeight: 700 }}>
+              {formatCurrency((entry.laborCost ?? 0) + entry.materialCost)}
+            </span>
+          </div>
         )}
       </div>
     </motion.div>
@@ -538,28 +550,24 @@ export function AccountPage() {
               </div>
             </div>
             <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column' as const, gap: '8px' }}>
-              {user?.role === 'technician' && (
-                <div style={styles.infoRow}>
-                  <span style={styles.infoLabel}>💰 Tổng tiền công</span>
-                  <span style={{ ...styles.infoValue, color: 'var(--color-accent)', fontWeight: 700 }}>
-                    {formatCurrency(stats.totalLaborCost)}
-                  </span>
-                </div>
-              )}
+              <div style={styles.infoRow}>
+                <span style={styles.infoLabel}>💰 Tổng tiền công</span>
+                <span style={{ ...styles.infoValue, color: 'var(--color-accent)', fontWeight: 700 }}>
+                  {formatCurrency(stats.totalLaborCost)}
+                </span>
+              </div>
               <div style={styles.infoRow}>
                 <span style={styles.infoLabel}>🔧 Tổng chi phí vật tư</span>
                 <span style={{ ...styles.infoValue, color: 'var(--color-primary)', fontWeight: 600 }}>
                   {formatCurrency(stats.totalMaterialCost)}
                 </span>
               </div>
-              {user?.role === 'technician' && (
-                <div style={{ ...styles.infoRow, borderBottom: 'none' }}>
-                  <span style={styles.infoLabel}>📦 Tổng chi phí</span>
-                  <span style={{ ...styles.infoValue, color: 'var(--color-warning)', fontWeight: 700 }}>
-                    {formatCurrency(stats.totalCost)}
-                  </span>
-                </div>
-              )}
+              <div style={{ ...styles.infoRow, borderBottom: 'none' }}>
+                <span style={styles.infoLabel}>📦 Tổng chi phí</span>
+                <span style={{ ...styles.infoValue, color: 'var(--color-warning)', fontWeight: 700 }}>
+                  {formatCurrency(stats.totalCost)}
+                </span>
+              </div>
             </div>
           </GlowCard>
         )}
@@ -776,10 +784,10 @@ const styles: Record<string, React.CSSProperties> = {
   modalOverlay: {
     position: 'fixed' as const, inset: 0, zIndex: 1000,
     background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)',
-    display: 'flex', alignItems: 'flex-end',
+    display: 'flex', alignItems: 'stretch', justifyContent: 'center',
   },
   modalSheet: {
-    width: '100%', maxHeight: '85vh', borderRadius: '20px 20px 0 0',
+    width: '100%', maxWidth: 428, height: '100dvh', borderRadius: 0,
     background: 'var(--color-surface)', border: '1px solid var(--color-surface-light)',
     display: 'flex', flexDirection: 'column' as const, overflow: 'hidden',
   },

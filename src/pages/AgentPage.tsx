@@ -374,7 +374,7 @@ print("__PRINTER_INFO_JSON_END__")
       localStorage.removeItem('gox_connect_public_ip');
     }
     if (fetchLanSitesData) {
-      await fetchLanSitesData(true);
+      await fetchLanSitesData(true, cleanIp);
     }
   };
 
