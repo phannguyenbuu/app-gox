@@ -1,6 +1,8 @@
 // @ts-nocheck
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { fetchApi, getLanSites, purgeLanPrinters, saveCopierCredentials, triggerAgentUtilityExec } from '../../../api/mockAgentApi';
+import { verifyNetworkAccess } from '../../../api/mockApi';
+import { useAuthStore } from '../../../stores/authStore';
 
 export const useAgentLanPrinters = (deps: any = {}) => {
   const { showToast, pollCommandStatus, utilityCommands } = deps;
@@ -71,21 +73,26 @@ export const useAgentLanPrinters = (deps: any = {}) => {
   useEffect(() => { selectedPublicIpRef.current = selectedPublicIp; }, [selectedPublicIp]);
 
 
-  const fetchLanSitesData = useCallback(async (isUserRefresh = false) => {
+  const fetchLanSitesData = useCallback(async (isUserRefresh = false, overrideIp?: string, overrideMacs?: string[]) => {
     if (isUserRefresh) setLanSitesLoading(true);
+    // Cho phép truyền thẳng IP muốn dùng thay vì đọc selectedPublicIpRef —
+    // vì setSelectedPublicIp(x) rồi gọi fetchLanSitesData(true) ngay sau đó
+    // (cùng 1 lượt gọi đồng bộ) sẽ đọc phải giá trị ref CŨ, do ref chỉ được
+    // đồng bộ qua 1 useEffect chạy SAU khi React commit re-render — không kịp
+    // trước khi hàm này đã bắt đầu chạy. Đây là nguyên nhân "Mở IP có sẵn" /
+    // "Kết nối IP" verify nhầm sang IP cũ, dẫn tới bị từ chối (403) sai.
+    const activeIpNow = (overrideIp !== undefined ? overrideIp : selectedPublicIpRef.current).trim();
+    if (overrideIp !== undefined) selectedPublicIpRef.current = overrideIp;
     try {
-      // Fix C: truyền IP từ ref (không đọc localStorage) — VPS filter theo IP state hiện tại
-      const data = await getLanSites(selectedPublicIpRef.current || undefined);
+      const data = await getLanSites(activeIpNow || undefined);
       const rows = data?.rows || (Array.isArray(data) ? data : []);
       setLanSites(rows);
 
       try {
         const clientIp = (data?.client_ip || '').trim();
         if (clientIp) setMyClientIp(clientIp);
-        const isAllowed = Boolean(data?.is_allowed);
         const activePublicIps = data?.active_public_ips || [];
-        // Fix C: dùng ref thay vì localStorage
-        const effectiveIp = selectedPublicIpRef.current || clientIp;
+        const effectiveIp = activeIpNow || clientIp;
 
         const matchedAgents: any[] = [];
         rows.forEach((site: any) => {
@@ -99,22 +106,19 @@ export const useAgentLanPrinters = (deps: any = {}) => {
         });
 
         const isSameNetwork = matchedAgents.length > 0;
-        const hasAccess = Boolean(selectedPublicIpRef.current) || isAllowed || isSameNetwork;
 
         console.log('==================================================');
         console.log('🌐 [PUBLIC IP ACCESS CONTROL CHECK]');
         console.log('📌 IP Public hiện tại của trình duyệt:', clientIp);
-        if (selectedPublicIpRef.current) console.log('⚡ IP Public do người dùng chỉ định kết nối:', selectedPublicIpRef.current);
+        if (activeIpNow) console.log('⚡ IP Public do người dùng chỉ định kết nối:', activeIpNow);
         console.log('🛡️ Danh sách Public IP đang Active trên Server:', activePublicIps);
-        console.log('✅ Quyền truy cập toàn bộ LAN (Is Whitelisted/Allowed):', (isAllowed || selectedPublicIpRef.current) ? 'CÓ (FULL ACCESS)' : 'KHÔNG (LIMITED BY AGENT PUBLIC IP)');
-        console.log('💻 Danh sách Agent có cùng Public IP:', matchedAgents.length > 0 ? matchedAgents : (hasAccess ? 'Đang mở Full LAN (Tất cả Agent)' : 'Không tìm thấy Agent cùng IP'));
+        console.log('👥 Cùng mạng với 1 Agent nào đó (isSameNetwork):', isSameNetwork);
         console.log('==================================================');
-
-        if (!hasAccess && clientIp) {
-          console.warn(`[ACCESS DENIED] Public IP ${clientIp} is not allowed and not in the same network.`);
-          setAccessDeniedState({ isOpen: true, ip: clientIp });
-          return;
-        }
+        // Lưu ý: quyết định cấp quyền thật sự KHÔNG còn dựa vào isAllowed/isSameNetwork
+        // ở đây nữa — chuyển toàn bộ sang verifyNetworkAccess() (CRM đối chiếu MAC theo
+        // đúng danh sách /apps/printer/list, hoặc phiếu công việc active) bên dưới, để
+        // tránh 2 lớp chặn xung đột nhau (lớp cũ từng return sớm trước khi lớp MAC/CRM
+        // mới kịp chạy, khiến kỹ thuật luôn bị đẩy ra màn "mở trực tiếp" dù MAC hợp lệ).
 
         console.log('[FRONTEND SCANPOINTS VPS] DANH SÁCH DANH BẠ TỪ SCANPOINTS VPS (< 3 NGÀY):');
         rows.forEach((site: any) => {
@@ -133,39 +137,79 @@ export const useAgentLanPrinters = (deps: any = {}) => {
       }
 
       if (rows.length > 0) {
-        setSelectedLanUid(() => {
-          const activeIp = selectedPublicIpRef.current.trim();
-          if (activeIp) {
-            const matchedSite = rows.find((s: any) => {
-              const pubIp = (s.public_ip || s.wan_ip || '').trim();
-              if (pubIp === activeIp) return true;
-              return (s.agents || []).some((ag: any) => (ag.public_ip || ag.wan_ip || ag.ip || '').trim() === activeIp);
-            });
-            if (matchedSite) {
-              localStorage.setItem('goxprint_selected_lan_uid', matchedSite.lan_uid);
-              return matchedSite.lan_uid;
-            }
-            // IP user nhập nhưng không match site nào — giữ IP làm LAN UID tạm
-            return activeIp;
+        const findSiteByIp = (ip: string) => rows.find((s: any) => {
+          const pubIp = (s.public_ip || s.wan_ip || '').trim();
+          if (pubIp === ip) return true;
+          return (s.agents || []).some((ag: any) => (ag.public_ip || ag.wan_ip || ag.ip || '').trim() === ip);
+        });
+        const normMac = (m: any) => String(m || '').toUpperCase().replace(/[^0-9A-F]/g, '');
+        // QUAN TRỌNG: lan_uid KHÔNG phải khoá ổn định như tưởng — với 1 site đã
+        // có Public IP "xác nhận", agentapi tự đổi lan_uid của site đó thành
+        // chính chuỗi Public IP hiện tại (nên nó trôi theo IP luôn). Khoá thật
+        // sự ổn định duy nhất là MAC của từng máy — nếu caller đã biết trước
+        // các MAC thuộc site này (vd "Mở IP có sẵn", resolve qua endpoint
+        // workstation luôn tươi mới), ưu tiên tìm site chứa MAC đó thay vì
+        // so khớp IP/lan_uid (đều có thể lag so với IP thật hiện tại).
+        const findSite = (ip: string, macs?: string[]) => {
+          if (macs && macs.length > 0) {
+            const macSet = new Set(macs.map(normMac).filter(Boolean));
+            const byMac = rows.find((s: any) =>
+              (s.printers || []).some((p: any) => macSet.has(normMac(p.mac_address || p.mac_id)))
+            );
+            if (byMac) return byMac;
           }
+          return findSiteByIp(ip);
+        };
+
+        const activeIp = activeIpNow;
+        let nextLanUid = '';
+
+        if (activeIp) {
+          const matchedSite = findSite(activeIp, overrideMacs);
+          if (matchedSite) {
+            localStorage.setItem('goxprint_selected_lan_uid', matchedSite.lan_uid);
+            nextLanUid = matchedSite.lan_uid;
+          } else {
+            // IP user nhập nhưng không match site nào — giữ IP làm LAN UID tạm
+            nextLanUid = activeIp;
+          }
+
+          // Luôn đối chiếu MAC tại site đó với CRM (Logic 1), hoặc tự động
+          // duyệt/từ chối theo phiếu công việc active (Logic 2) — kể cả khi
+          // đây là lần tải trang đầu tiên với 1 IP đã lưu từ localStorage,
+          // không chỉ khi kỹ thuật chủ động bấm gửi lại (isUserRefresh).
+          const macsAtSite = matchedSite
+            ? (matchedSite.printers || [])
+                .map((p: any) => (p.mac_address || p.mac_id || '').trim())
+                .filter(Boolean)
+            : [];
+          const token = useAuthStore.getState().token;
+          verifyNetworkAccess(token || '', { macs: macsAtSite, public_ip: activeIp, request_type: 'lookup' })
+            .then((result) => {
+              if (!result.ok || result.access !== 'full') {
+                setAccessDeniedState({ isOpen: true, ip: activeIp });
+                setSelectedLanUid('');
+                localStorage.removeItem('goxprint_selected_lan_uid');
+              } else if (result.access_type === 'auto_approved_task' && showToast) {
+                showToast(`✔ Đã tự động duyệt qua phiếu công việc #${result.auto_approved_via}`, 'success', 4000);
+              }
+            })
+            .catch(() => {});
+        } else {
           // Khi chưa có IP user chỉ định: kiểm tra xem IP Public hiện tại (client_ip) có khớp mạng LAN nào không
           const detectedClientIp = (data?.client_ip || '').trim();
           if (detectedClientIp) {
-            const matchedSite = rows.find((s: any) => {
-              const pubIp = (s.public_ip || s.wan_ip || '').trim();
-              if (pubIp === detectedClientIp) return true;
-              return (s.agents || []).some((ag: any) => (ag.public_ip || ag.wan_ip || ag.ip || '').trim() === detectedClientIp);
-            });
+            const matchedSite = findSiteByIp(detectedClientIp);
             if (matchedSite) {
               localStorage.setItem('goxprint_selected_lan_uid', matchedSite.lan_uid);
-              return matchedSite.lan_uid;
+              nextLanUid = matchedSite.lan_uid;
             }
           }
-
           // TUYỆT ĐỐI CẤM FALLBACK: Không khớp mạng hiện tại và chưa chọn IP -> KHÔNG CHỌN, để trống
-          localStorage.removeItem('goxprint_selected_lan_uid');
-          return '';
-        });
+          if (!nextLanUid) localStorage.removeItem('goxprint_selected_lan_uid');
+        }
+
+        setSelectedLanUid(nextLanUid);
       } else {
         setSelectedLanUid('');
       }
@@ -213,6 +257,16 @@ export const useAgentLanPrinters = (deps: any = {}) => {
   }, [lanSites, selectedPublicIp]);
 
   const selectedLan = useMemo(() => {
+    // Ưu tiên selectedLanUid trước — đây là kết quả đã resolve đúng qua MAC
+    // (ổn định) ở fetchLanSitesData, trong khi so khớp theo Public IP dưới
+    // đây có thể trật vì trường public_ip/wan_ip lưu theo site có thể lag so
+    // với IP thật sự hiện tại của Agent (site đã "xác nhận" IP sẽ tự đổi
+    // lan_uid của nó thành chính IP đó, nên IP cũ vẫn còn sót lại 1 lúc).
+    if (lanSites && lanSites.length > 0 && selectedLanUid) {
+      const siteByUid = lanSites.find((site) => site.lan_uid === selectedLanUid);
+      if (siteByUid) return siteByUid;
+    }
+
     // Fix E: chỉ dùng state — không đọc localStorage trong useMemo
     const activePublicIp = selectedPublicIp.trim();
     if (activePublicIp) {
@@ -238,11 +292,6 @@ export const useAgentLanPrinters = (deps: any = {}) => {
         emails: [],
         printers: [],
       };
-    }
-    if (!lanSites || lanSites.length === 0) return null;
-    if (selectedLanUid) {
-      const siteByUid = lanSites.find((site) => site.lan_uid === selectedLanUid);
-      if (siteByUid) return siteByUid;
     }
     // TUYỆT ĐỐI CẤM FALLBACK sang siteWithPrinters hoặc lanSites[0]!
     return null;

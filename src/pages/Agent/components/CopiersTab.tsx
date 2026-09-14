@@ -93,6 +93,7 @@ export function CopiersTab(props: any) {
     storageFilterDate,
     submittingScanPoint,
     toshibaVncData,
+    handleStartToshibaVnc,
     utilityActionPending,
     utilityCommands,
     utilityCommandsLoading,
@@ -302,6 +303,7 @@ export function CopiersTab(props: any) {
                   setExpandedDriverMenus={setExpandedDriverMenus}
                   handleRemoteInstallDriver={handleRemoteInstallDriver || (() => {})}
                   setPublicFtpData={setPublicFtpData}
+                  handleStartToshibaVnc={handleStartToshibaVnc}
                 />
               );
             })
