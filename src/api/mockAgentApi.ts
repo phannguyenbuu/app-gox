@@ -7,16 +7,33 @@ export async function fetchApi(path: string, options: RequestInit = {}) {
   const separator = path.includes('?') ? '&' : '?';
   const urlPath = method === 'GET' ? `${path}${separator}_t=${Date.now()}` : path;
 
+  let authToken = '';
+  try {
+    const raw = localStorage.getItem('auth_session');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed?.token) authToken = parsed.token;
+    }
+  } catch {}
+
+  const defaultHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
+    'Pragma': 'no-cache',
+    'X-API-Token': 'change-me',
+    'X-API-Key': 'change-me',
+  };
+  if (authToken) {
+    defaultHeaders['Authorization'] = `Bearer ${authToken}`;
+  }
+
   const res = await fetch(`${BASE_URL}${urlPath}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'no-cache, no-store, must-revalidate',
-      'Pragma': 'no-cache',
-      'Expires': '0',
-      'X-API-Token': 'change-me',
+      ...defaultHeaders,
       ...options.headers,
     },
+    credentials: 'include',
     cache: 'no-store',
   });
 
@@ -25,6 +42,20 @@ export async function fetchApi(path: string, options: RequestInit = {}) {
     throw new Error(errorData.error || `HTTP error! status: ${res.status}`);
   }
   return await res.json();
+}
+
+export async function startAgentTunnel(agentUid: string, targetIp: string, targetPort: number = 80): Promise<any> {
+  return fetchApi(`/api/agents/${encodeURIComponent(agentUid)}/tunnel/start`, {
+    method: 'POST',
+    body: JSON.stringify({ printer_ip: targetIp, printer_port: targetPort })
+  });
+}
+
+export async function stopAgentTunnel(agentUid: string, targetIp: string): Promise<any> {
+  return fetchApi(`/api/agents/${encodeURIComponent(agentUid)}/tunnel/stop`, {
+    method: 'POST',
+    body: JSON.stringify({ printer_ip: targetIp })
+  });
 }
 
 export async function mockGetAgents(lanUid?: string): Promise<Agent[]> {

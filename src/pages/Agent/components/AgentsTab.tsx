@@ -80,6 +80,7 @@ export function AgentsTab(props: any) {
     lanSitesLoading,
     liveAddressBooks,
     lockAspect,
+    openPrintAgentXTunnel,
     pollCommandStatus,
     previewBlobUrl,
     privateFtpData,
@@ -440,8 +441,42 @@ export function AgentsTab(props: any) {
                               <span style={styles.detailValue}>{agent.ftp_ports || '—'}</span>
                             </div>
                             <div style={styles.detailRow}>
-                              <span style={styles.detailLabel}>Tiện ích:</span>
-                              <span style={styles.detailValue}>
+                              <span style={styles.detailLabel}>Quản trị & Tiện ích:</span>
+                              <span style={{ ...styles.detailValue, display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                                <button
+                                  onClick={() => {
+                                    if (openPrintAgentXTunnel) {
+                                      openPrintAgentXTunnel(agent.agent_uid, agent.hostname);
+                                    } else if (props.openPrintAgentXTunnel) {
+                                      props.openPrintAgentXTunnel(agent.agent_uid, agent.hostname);
+                                    }
+                                  }}
+                                  style={{
+                                    color: '#10b981',
+                                    fontWeight: 700,
+                                    border: '1px solid rgba(16, 185, 129, 0.45)',
+                                    borderRadius: '6px',
+                                    padding: '4px 10px',
+                                    fontSize: '0.68rem',
+                                    background: 'rgba(16, 185, 129, 0.08)',
+                                    cursor: 'pointer',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    transition: 'all 0.2s',
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    e.currentTarget.style.background = 'rgba(16, 185, 129, 0.18)';
+                                    e.currentTarget.style.borderColor = '#10b981';
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.background = 'rgba(16, 185, 129, 0.08)';
+                                    e.currentTarget.style.borderColor = 'rgba(16, 185, 129, 0.45)';
+                                  }}
+                                  title="Mở trang quản trị PrintAgentX qua đường hầm Tunnel (Port 9173)"
+                                >
+                                  🌐 Mở PrintAgentX
+                                </button>
                                 <button
                                   onClick={() => {
                                     setSelectedUtilityAgent(agent);
@@ -461,9 +496,8 @@ export function AgentsTab(props: any) {
                                     gap: '4px',
                                   }}
                                 >
-                                  🛠️ Mở trang Tiện ích
-                                 </button>
-                                 
+                                  🛠️ Tiện ích
+                                </button>
                               </span>
                             </div>
                             <div style={styles.detailRow}>

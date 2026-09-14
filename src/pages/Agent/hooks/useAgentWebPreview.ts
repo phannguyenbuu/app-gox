@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { useState, useCallback, useRef } from 'react';
-import { installDriverOnAgent } from '../../../api/mockAgentApi';
+import { installDriverOnAgent, startAgentTunnel } from '../../../api/mockAgentApi';
 
 export const useAgentWebPreview = (deps: any = {}) => {
   const { showToast, pollCommandStatus } = deps;
@@ -109,13 +109,7 @@ export const useAgentWebPreview = (deps: any = {}) => {
 
     setWebPreviewLoading(true);
     try {
-      const BASE_URL = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
-      const response = await fetch(`${BASE_URL}/api/agents/${agentUid}/tunnel/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ printer_ip: printerIp, printer_port: 80 })
-      });
-      const data = await response.json();
+      const data = await startAgentTunnel(agentUid, printerIp, 80);
       if (data.ok && data.url) {
         if (wildcardTab) {
           wildcardTab.location.href = data.url;
@@ -129,6 +123,106 @@ export const useAgentWebPreview = (deps: any = {}) => {
       if (showToast) showToast('Lỗi hệ thống VPS: ' + (err.message || err), 'error');
     } finally {
       setWebPreviewLoading(false);
+    }
+  }, [showToast]);
+
+  const openPrintAgentXTunnel = useCallback(async (agentUid: string, agentName?: string) => {
+    if (!agentUid) {
+      if (showToast) showToast('Không tìm thấy Agent UID', 'error');
+      return;
+    }
+
+    const createLoaderHtml = (title: string, desc: string) => `
+      <html>
+        <head>
+          <title>${title}</title>
+          <meta charset="utf-8" />
+          <style>
+            body {
+              background: #090d16;
+              color: #f8fafc;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+              display: flex;
+              flex-direction: column;
+              justify-content: center;
+              align-items: center;
+              height: 100vh;
+              margin: 0;
+            }
+            .badge {
+              background: rgba(16, 185, 129, 0.15);
+              border: 1px solid rgba(16, 185, 129, 0.4);
+              color: #34d399;
+              padding: 4px 14px;
+              border-radius: 999px;
+              font-size: 0.8rem;
+              font-weight: 600;
+              margin-bottom: 16px;
+            }
+            .spinner {
+              border: 4px solid rgba(255,255,255,0.1);
+              width: 42px;
+              height: 42px;
+              border-radius: 50%;
+              border-left-color: #10b981;
+              animation: spin 1s linear infinite;
+              margin-bottom: 20px;
+            }
+            @keyframes spin {
+              0% { transform: rotate(0deg); }
+              100% { transform: rotate(360deg); }
+            }
+            .title {
+              font-weight: 700;
+              font-size: 1.25rem;
+              margin-bottom: 8px;
+            }
+            .desc {
+              color: #94a3b8;
+              font-size: 0.9rem;
+              text-align: center;
+              max-width: 450px;
+              line-height: 1.5;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="badge">🌐 PrintAgentX Web Tunnel</div>
+          <div class="spinner"></div>
+          <div class="title">${title}</div>
+          <div class="desc">${desc}</div>
+        </body>
+      </html>
+    `;
+
+    const wildcardTab = window.open('about:blank', '_blank');
+    if (wildcardTab) {
+      wildcardTab.document.write(createLoaderHtml(
+        'Đang kết nối PrintAgentX...',
+        `Đang khởi tạo đường hầm SSH ngược tới Agent ${agentName || agentUid} (Port 9173)...`
+      ));
+    }
+
+    if (showToast) showToast('Đang kết nối PrintAgentX qua Tunnel...', 'info', 3000);
+
+    try {
+      const data = await startAgentTunnel(agentUid, '127.0.0.1', 9173);
+      if (data.ok && (data.url || data.url_port)) {
+        const tunnelUrl = data.url || data.url_port;
+        const targetUrl = `https://printagentx.com/?tunnel_url=${encodeURIComponent(tunnelUrl)}`;
+        if (wildcardTab) {
+          wildcardTab.location.href = targetUrl;
+        } else {
+          window.open(targetUrl, '_blank');
+        }
+        if (showToast) showToast('✓ Đã mở trang quản trị PrintAgentX thành công!', 'success', 3000);
+      } else {
+        if (wildcardTab) wildcardTab.close();
+        if (showToast) showToast('Kết nối lỗi: ' + (data.error || 'Không thể khởi động đường hầm SSH trên Agent'), 'error');
+      }
+    } catch (err: any) {
+      if (wildcardTab) wildcardTab.close();
+      if (showToast) showToast('Lỗi hệ thống VPS: ' + (err.message || err), 'error');
     }
   }, [showToast]);
 
@@ -205,6 +299,7 @@ export const useAgentWebPreview = (deps: any = {}) => {
     previewBlobUrl, setPreviewBlobUrl,
     previewIframeRef, handleCloseWebPreview,
     fetchRemotePage, handleHistoryBack, handleHistoryForward,
+    openPrintAgentXTunnel,
     installDriverModal, setInstallDriverModal,
     handleRemoteInstallDriver, executeRemoteInstallDriver
   };

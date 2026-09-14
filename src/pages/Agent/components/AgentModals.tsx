@@ -636,6 +636,7 @@ export function AgentModals(props: any) {
     liveAddressBooks,
     lockAspect,
     modalContentRef,
+    openPrintAgentXTunnel,
     pollCommandStatus,
     previewBlobUrl,
     previewIframeRef,
@@ -1283,60 +1284,85 @@ export function AgentModals(props: any) {
                       </h4>
                       
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
+                        {/* Nút PrintAgentX Tunnel Cố Định */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const uid = selectedUtilityAgent?.agent_uid;
+                            if (!uid) return;
+                            if (openPrintAgentXTunnel) {
+                              openPrintAgentXTunnel(uid, selectedUtilityAgent?.hostname);
+                            } else if (props.openPrintAgentXTunnel) {
+                              props.openPrintAgentXTunnel(uid, selectedUtilityAgent?.hostname);
+                            }
+                          }}
+                          disabled={utilityActionPending !== null}
+                          style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '8px',
+                            background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(5, 150, 105, 0.22) 100%)',
+                            border: '1px solid rgba(16, 185, 129, 0.45)',
+                            borderRadius: '12px',
+                            padding: '16px 8px',
+                            cursor: utilityActionPending !== null ? 'not-allowed' : 'pointer',
+                            textAlign: 'center',
+                            width: '100%',
+                            transition: 'all 0.2s',
+                            minHeight: '108px',
+                            boxSizing: 'border-box',
+                            boxShadow: '0 2px 10px rgba(16, 185, 129, 0.12)',
+                          }}
+                          onMouseEnter={(e) => {
+                            if (utilityActionPending === null) {
+                              e.currentTarget.style.borderColor = '#10b981';
+                              e.currentTarget.style.background = 'linear-gradient(135deg, rgba(16, 185, 129, 0.22) 0%, rgba(5, 150, 105, 0.32) 100%)';
+                              e.currentTarget.style.transform = 'translateY(-2px)';
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            e.currentTarget.style.borderColor = 'rgba(16, 185, 129, 0.45)';
+                            e.currentTarget.style.background = 'linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(5, 150, 105, 0.22) 100%)';
+                            e.currentTarget.style.transform = 'none';
+                          }}
+                          title="Mở trang quản trị PrintAgentX qua đường hầm SSH Tunnel (Port 9173)"
+                        >
+                          <div style={{ fontSize: '1.6rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            🌐
+                          </div>
+                          <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#10b981' }}>
+                            Mở PrintAgentX
+                          </div>
+                          <div style={{ fontSize: '0.65rem', color: 'var(--color-text-secondary)', lineHeight: 1.2 }}>
+                            Tunnel Port 9173
+                          </div>
+                        </button>
+
                         {/* Dynamic commands from JSON — thêm lệnh mới vào utility_commands.json trên VPS là xong */}
                         {utilityCommandsLoading ? (
-                          <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem', color: 'var(--color-text-secondary)', padding: '8px 0', justifyContent: 'center' }}>
+                          <div style={{ gridColumn: '2 / -1', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.75rem', color: 'var(--color-text-secondary)', padding: '8px 0', justifyContent: 'center' }}>
                             <LoadingSpinner size="sm" /> Đang tải danh sách lệnh...
                           </div>
                         ) : (
                           <>
                             {utilityCommands.length > 0 ? (
                               (() => {
-                                const filtered = utilityCommands.filter((cmd: any) => cmd.command !== 'dxdiag' && cmd.is_visible !== false);
+                                const filtered = utilityCommands.filter((cmd: any) => cmd.command !== 'dxdiag' && cmd.command !== 'open_web_setting' && cmd.is_visible !== false);
                                 const syncIdx = filtered.findIndex((cmd: any) => cmd.command === 'sync_all_scanpoints');
                                 if (syncIdx > -1) {
                                   const [syncCmd] = filtered.splice(syncIdx, 1);
                                   filtered.unshift(syncCmd);
                                 }
 
-                                const handleOpenWim = async () => {
+                                const handleOpenWim = () => {
                                   const agentUid = selectedUtilityAgent?.agent_uid;
                                   if (!agentUid) return;
-                                  handleTriggerUtilityExec('open_printagentx_wim', `import webbrowser\nwebbrowser.open("http://localhost:9173")`);
-                                  try {
-                                    const BASE_URL = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
-                                    const res = await fetch(`${BASE_URL}/api/agents/${encodeURIComponent(agentUid)}/tunnel/start`, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({ printer_ip: '127.0.0.1', printer_port: 9173 })
-                                    });
-                                    const data = await res.json();
-                                    const tunnelUrl = data?.url || data?.url_port || '';
-
-                                    if (setWebPreviewModal) {
-                                      setWebPreviewModal({
-                                        isOpen: true,
-                                        title: `🌐 WIM PrintAgentX — Agent ${selectedUtilityAgent?.hostname || agentUid}`,
-                                        ip: selectedUtilityAgent?.local_ip || '127.0.0.1',
-                                        path: '/',
-                                        html: 'DIRECT_LAN',
-                                        url: tunnelUrl ? `https://printagentx.com/?tunnel_url=${encodeURIComponent(tunnelUrl)}` : `https://printagentx.com`,
-                                        agentUid: agentUid
-                                      });
-                                    }
-                                  } catch (err) {
-                                    console.error('Failed to start agent web tunnel:', err);
-                                    if (setWebPreviewModal) {
-                                      setWebPreviewModal({
-                                        isOpen: true,
-                                        title: `🌐 WIM PrintAgentX — Agent ${selectedUtilityAgent?.hostname || agentUid}`,
-                                        ip: selectedUtilityAgent?.local_ip || '127.0.0.1',
-                                        path: '/',
-                                        html: 'DIRECT_LAN',
-                                        url: `https://printagentx.com`,
-                                        agentUid: agentUid
-                                      });
-                                    }
+                                  if (openPrintAgentXTunnel) {
+                                    openPrintAgentXTunnel(agentUid, selectedUtilityAgent?.hostname);
+                                  } else if (props.openPrintAgentXTunnel) {
+                                    props.openPrintAgentXTunnel(agentUid, selectedUtilityAgent?.hostname);
                                   }
                                 };
 
