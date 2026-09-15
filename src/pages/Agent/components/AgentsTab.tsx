@@ -6,6 +6,7 @@ import { GlowCard } from '../../../components/ui/GlowCard';
 import { AnimatedList } from '../../../components/ui/AnimatedList';
 import { safePathToken } from '../utils/agentUtils';
 import { CopierItem } from './CopierItem';
+import { LoadingSpinner } from '../../../components/ui/LoadingSpinner';
 import { triggerAgentUtilityExec, getCommandStatus } from '../../../api/mockAgentApi';
 
 export function AgentsTab(props: any) {
@@ -205,6 +206,218 @@ export function AgentsTab(props: any) {
     webPreviewTab
   } = props;
 
+  const [scanFolderDisplay, setScanFolderDisplay] = React.useState<Record<string, string>>({});
+  const [scanFolderModal, setScanFolderModal] = React.useState<{
+    isOpen: boolean;
+    agent: any | null;
+    scanPath: string;
+    isLoading: boolean;
+    isSaving: boolean;
+    statusMsg?: string;
+    error?: string;
+  }>({
+    isOpen: false,
+    agent: null,
+    scanPath: '',
+    isLoading: false,
+    isSaving: false,
+  });
+
+  const handleOpenScanFolderModal = async (agent: any) => {
+    const defaultTempPath = '%TEMP%\\GoPrinxAgent\\ftp';
+    const initialFallback = scanFolderDisplay[agent.agent_uid] || defaultTempPath;
+
+    setScanFolderModal({
+      isOpen: true,
+      agent,
+      scanPath: initialFallback,
+      isLoading: true,
+      isSaving: false,
+      statusMsg: '',
+      error: '',
+    });
+
+    try {
+      const res = await triggerAgentUtilityExec(agent.agent_uid, 'view_settings_json', '');
+      if (res.ok && res.command_id) {
+        const commandId = res.command_id;
+        const startTime = Date.now();
+        const timer = setInterval(async () => {
+          try {
+            if (Date.now() - startTime > 12000) {
+              clearInterval(timer);
+              setScanFolderModal(prev => ({
+                ...prev,
+                isLoading: false,
+                statusMsg: '',
+              }));
+              return;
+            }
+            const statusRes = await getCommandStatus(commandId);
+            if (statusRes.status === 'success') {
+              clearInterval(timer);
+              const rawPayload = statusRes.result_payload || statusRes.result || statusRes.output || '';
+              let parsedSettings: any = null;
+              if (typeof rawPayload === 'object' && rawPayload !== null) {
+                parsedSettings = rawPayload;
+              } else if (typeof rawPayload === 'string') {
+                try {
+                  parsedSettings = JSON.parse(rawPayload);
+                } catch {
+                  const match = rawPayload.match(/\{[\s\S]*\}/);
+                  if (match) {
+                    try { parsedSettings = JSON.parse(match[0]); } catch {}
+                  }
+                }
+              }
+
+              let realScanPath = '';
+              if (parsedSettings) {
+                realScanPath = (parsedSettings.polling && parsedSettings.polling.scan_dirs) ||
+                               parsedSettings.scan_dirs ||
+                               parsedSettings.ftp_path ||
+                               parsedSettings.scan_path ||
+                               '';
+                if (Array.isArray(realScanPath)) {
+                  realScanPath = realScanPath[0] || '';
+                }
+              }
+
+              if (realScanPath) {
+                realScanPath = String(realScanPath).replace(/\|+/g, '\\').replace(/\/+/g, '\\');
+                setScanFolderModal(prev => ({
+                  ...prev,
+                  scanPath: realScanPath,
+                  isLoading: false,
+                }));
+                setScanFolderDisplay(prev => ({ ...prev, [agent.agent_uid]: realScanPath }));
+              } else {
+                setScanFolderModal(prev => ({
+                  ...prev,
+                  scanPath: defaultTempPath,
+                  isLoading: false,
+                }));
+              }
+            } else if (statusRes.status === 'failed') {
+              clearInterval(timer);
+              setScanFolderModal(prev => ({
+                ...prev,
+                isLoading: false,
+                statusMsg: '',
+                error: `Không thể đọc settings.json: ${statusRes.result || statusRes.output || 'Lỗi agent'}`,
+              }));
+            }
+          } catch (err: any) {
+            console.error(err);
+            clearInterval(timer);
+            setScanFolderModal(prev => ({ ...prev, isLoading: false }));
+          }
+        }, 1000);
+      } else {
+        setScanFolderModal(prev => ({
+          ...prev,
+          isLoading: false,
+          statusMsg: '',
+          error: res.error || 'Lỗi gửi lệnh đọc settings.json',
+        }));
+      }
+    } catch (err: any) {
+      setScanFolderModal(prev => ({
+        ...prev,
+        isLoading: false,
+        statusMsg: '',
+        error: err?.message || 'Lỗi kết nối đọc settings.json',
+      }));
+    }
+  };
+
+  const handleSaveScanFolderModal = async () => {
+    if (!scanFolderModal.agent) return;
+    const agentUid = scanFolderModal.agent.agent_uid;
+    const rawVal = (scanFolderModal.scanPath || '').trim();
+    const newPath = rawVal.replace(/\|+/g, '\\').replace(/\/+/g, '\\');
+
+    if (!newPath) {
+      if (props.showToast) props.showToast('Vui lòng nhập đường dẫn thư mục scan', 'warning');
+      return;
+    }
+
+    setScanFolderModal(prev => ({ ...prev, isSaving: true, error: '' }));
+    if (props.showToast) {
+      props.showToast(`Đang cấu hình thư mục scan: ${newPath}...`, 'info');
+    }
+
+    try {
+      const res = await triggerAgentUtilityExec(agentUid, 'set_scan_folder', '', { new_path: newPath });
+      if (res.ok && res.command_id) {
+        const commandId = res.command_id;
+        const startTime = Date.now();
+        const timer = setInterval(async () => {
+          try {
+            if (Date.now() - startTime > 15000) {
+              clearInterval(timer);
+              setScanFolderModal(prev => ({
+                ...prev,
+                isSaving: false,
+                error: 'Hết thời gian chờ phản hồi từ Agent',
+              }));
+              return;
+            }
+            const statusRes = await getCommandStatus(commandId);
+            if (statusRes.status === 'success') {
+              clearInterval(timer);
+              setScanFolderDisplay(prev => ({ ...prev, [agentUid]: newPath }));
+              setScanFolderModal(prev => ({ ...prev, isOpen: false, isSaving: false }));
+              if (props.fetchLanSitesData) {
+                await props.fetchLanSitesData(true);
+              }
+              if (props.showToast) {
+                props.showToast(`✔ Đã cập nhật thư mục scan: ${newPath}`, 'success');
+              }
+            } else if (statusRes.status === 'failed') {
+              clearInterval(timer);
+              const errMsg = statusRes.result || statusRes.output || 'Lỗi agent';
+              setScanFolderModal(prev => ({
+                ...prev,
+                isSaving: false,
+                error: `Cập nhật thất bại: ${errMsg}`,
+              }));
+              if (props.showToast) {
+                props.showToast(`Cập nhật thất bại: ${errMsg}`, 'error');
+              }
+            }
+          } catch (pollErr: any) {
+            console.error(pollErr);
+            clearInterval(timer);
+            setScanFolderModal(prev => ({
+              ...prev,
+              isSaving: false,
+              error: pollErr?.message || 'Lỗi kiểm tra trạng thái',
+            }));
+          }
+        }, 1000);
+      } else {
+        setScanFolderModal(prev => ({
+          ...prev,
+          isSaving: false,
+          error: res.error || 'Lỗi server',
+        }));
+        if (props.showToast) {
+          props.showToast('Gửi lệnh thất bại: ' + (res.error || 'Lỗi server'), 'error');
+        }
+      }
+    } catch (err: any) {
+      setScanFolderModal(prev => ({
+        ...prev,
+        isSaving: false,
+        error: err?.message || 'Lỗi mạng',
+      }));
+      if (props.showToast) {
+        props.showToast('Lỗi: ' + (err?.message || 'Lỗi mạng'), 'error');
+      }
+    }
+  };
+
   return (
     <>
       {/* AgentsTab */}
@@ -367,6 +580,41 @@ export function AgentsTab(props: any) {
                               <span style={styles.detailLabel}>Địa chỉ MAC:</span>
                               <span style={styles.detailValue}>{agent.local_mac || '—'}</span>
                             </div>
+                            {(() => {
+                              const agentScanDir = Array.isArray(agent.scan_dirs) ? agent.scan_dirs[0] : (agent.scan_dirs || '');
+                              const goxprintSite = (agent.ftp_sites || []).find(
+                                (s: any) => (s.name || '').toLowerCase() === 'goxprint'
+                              ) || (agent.ftp_sites || [])[0];
+                              const localPath = scanFolderDisplay[agent.agent_uid] || agentScanDir || goxprintSite?.path || '%TEMP%\\GoPrinxAgent\\ftp';
+
+                              return (
+                                <div style={{ ...styles.detailRow, alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                                  <span style={{ ...styles.detailLabel, whiteSpace: 'nowrap' }}>Thư mục Scan (FTP):</span>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', justifyContent: 'flex-end' }}>
+                                    <button
+                                      onClick={() => handleOpenScanFolderModal(agent)}
+                                      style={{
+                                        padding: '4px 10px',
+                                        fontSize: '0.75rem',
+                                        fontWeight: 600,
+                                        borderRadius: '6px',
+                                        border: '1px solid var(--color-primary, #00d4ff)',
+                                        background: 'rgba(0, 212, 255, 0.08)',
+                                        color: 'var(--color-primary, #00d4ff)',
+                                        cursor: 'pointer',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '5px',
+                                        transition: 'all 0.2s',
+                                      }}
+                                      title="Nhấn để xem và đổi thư mục Scan từ settings.json của Agent"
+                                    >
+                                      📁 Đổi Thư mục
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })()}
                             <div style={styles.detailRow}>
                               <span style={styles.detailLabel}>Tệp scan (VPS):</span>
                               <span style={styles.detailValue}>
@@ -585,6 +833,174 @@ export function AgentsTab(props: any) {
                   )}
                 </AnimatedList>
               </motion.div>
+
+      {/* Modal Cấu hình Thư mục Scan (FTP) */}
+      <AnimatePresence>
+        {scanFolderModal.isOpen && scanFolderModal.agent && (
+          <div
+            style={styles.confirmOverlay}
+            onClick={() => {
+              if (!scanFolderModal.isSaving) {
+                setScanFolderModal(prev => ({ ...prev, isOpen: false }));
+              }
+            }}
+          >
+            <motion.div
+              style={{
+                ...styles.confirmModalCard,
+                maxWidth: '400px',
+                width: '90%',
+                background: 'var(--color-surface, #1e1e24)',
+                border: '1px solid var(--color-surface-light, rgba(255,255,255,0.15))',
+                borderRadius: '12px',
+                padding: '16px 20px',
+                boxShadow: '0 12px 32px rgba(0,0,0,0.5)',
+              }}
+              onClick={(e) => e.stopPropagation()}
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+            >
+              {/* Header: 1 Label duy nhất */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                <label style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--color-text)' }}>
+                  Đường dẫn thư mục scan
+                </label>
+                <button
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--color-text-secondary)',
+                    fontSize: '1.2rem',
+                    cursor: scanFolderModal.isSaving ? 'not-allowed' : 'pointer',
+                    padding: '0 4px',
+                    lineHeight: 1,
+                  }}
+                  disabled={scanFolderModal.isSaving}
+                  onClick={() => setScanFolderModal(prev => ({ ...prev, isOpen: false }))}
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* 1 Input duy nhất */}
+              <div style={{ position: 'relative', marginBottom: '16px' }}>
+                <input
+                  type="text"
+                  placeholder={scanFolderModal.isLoading ? 'Đang tải...' : '%TEMP%\\GoPrinxAgent\\ftp'}
+                  value={scanFolderModal.scanPath}
+                  disabled={scanFolderModal.isLoading || scanFolderModal.isSaving}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\|+/g, '\\');
+                    setScanFolderModal(prev => ({ ...prev, scanPath: val }));
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !scanFolderModal.isLoading && !scanFolderModal.isSaving) {
+                      handleSaveScanFolderModal();
+                    }
+                  }}
+                  style={{
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    padding: '8px 12px',
+                    paddingRight: scanFolderModal.isLoading ? '36px' : '12px',
+                    fontSize: '0.85rem',
+                    fontFamily: 'monospace',
+                    borderRadius: '6px',
+                    border: '1px solid var(--color-surface-light, rgba(255,255,255,0.2))',
+                    background: 'var(--color-bg, #141418)',
+                    color: 'var(--color-primary, #00d4ff)',
+                    outline: 'none',
+                  }}
+                  autoFocus
+                />
+                {scanFolderModal.isLoading && (
+                  <div style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)' }}>
+                    <LoadingSpinner size="sm" />
+                  </div>
+                )}
+              </div>
+
+              {/* Lỗi nếu có */}
+              {scanFolderModal.error && (
+                <div style={{ fontSize: '0.72rem', color: '#ef4444', marginBottom: '12px' }}>
+                  ⚠️ {scanFolderModal.error}
+                </div>
+              )}
+
+              {/* Nút hành động */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                <button
+                  type="button"
+                  disabled={scanFolderModal.isLoading || scanFolderModal.isSaving}
+                  onClick={() => setScanFolderModal(prev => ({ ...prev, scanPath: '%TEMP%\\GoPrinxAgent\\ftp' }))}
+                  style={{
+                    padding: '6px 12px',
+                    fontSize: '0.78rem',
+                    fontWeight: 500,
+                    borderRadius: '6px',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    background: 'rgba(255, 255, 255, 0.05)',
+                    color: 'var(--color-text-secondary)',
+                    cursor: (scanFolderModal.isLoading || scanFolderModal.isSaving) ? 'not-allowed' : 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                  title="Đặt lại về %TEMP%\GoPrinxAgent\ftp"
+                >
+                  ↺ Reset
+                </button>
+                <button
+                  type="button"
+                  disabled={scanFolderModal.isSaving}
+                  onClick={() => setScanFolderModal(prev => ({ ...prev, isOpen: false }))}
+                  style={{
+                    padding: '6px 14px',
+                    fontSize: '0.78rem',
+                    fontWeight: 500,
+                    borderRadius: '6px',
+                    border: '1px solid var(--color-surface-light, rgba(255,255,255,0.2))',
+                    background: 'transparent',
+                    color: 'var(--color-text-secondary)',
+                    cursor: scanFolderModal.isSaving ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  Hủy
+                </button>
+                <button
+                  type="button"
+                  disabled={scanFolderModal.isLoading || scanFolderModal.isSaving || !scanFolderModal.scanPath.trim()}
+                  onClick={handleSaveScanFolderModal}
+                  style={{
+                    padding: '6px 16px',
+                    fontSize: '0.78rem',
+                    fontWeight: 600,
+                    borderRadius: '6px',
+                    border: 'none',
+                    background: 'var(--color-primary, #00d4ff)',
+                    color: '#000',
+                    cursor: (scanFolderModal.isLoading || scanFolderModal.isSaving || !scanFolderModal.scanPath.trim()) ? 'not-allowed' : 'pointer',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    opacity: (scanFolderModal.isLoading || scanFolderModal.isSaving || !scanFolderModal.scanPath.trim()) ? 0.6 : 1,
+                  }}
+                >
+                  {scanFolderModal.isSaving ? (
+                    <>
+                      <LoadingSpinner size="sm" />
+                      <span>Đang lưu...</span>
+                    </>
+                  ) : (
+                    <span>Lưu</span>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
             
     </>
   );

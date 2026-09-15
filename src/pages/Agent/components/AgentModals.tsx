@@ -21,15 +21,32 @@ const defaultFormatJsonText = (val: any) => {
     }
   }
   if (typeof val === 'string') {
-    const trimmed = val.trim();
+    let str = val;
+    const trimmed = str.trim();
     if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
       try {
         const parsed = JSON.parse(trimmed);
         return JSON.stringify(parsed, null, 2);
       } catch {
-        return val;
+        // Fall through
       }
     }
+    // If it's a JSON string literal e.g. "..."
+    if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (typeof parsed === 'string') {
+          str = parsed;
+        }
+      } catch {
+        // Fall through
+      }
+    }
+    // If the text has literal escaped newlines ("\n" or "\r\n"), unescape them so they render as proper lines
+    if (str.includes('\\n') || str.includes('\\r')) {
+      str = str.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').replace(/\\r/g, '\n').replace(/\\t/g, '\t');
+    }
+    return str;
   }
   return String(val);
 };
@@ -778,13 +795,17 @@ export function AgentModals(props: any) {
 
   React.useEffect(() => {
     if (viewOutputModal?.isOpen) {
+      if (viewOutputModal?.title?.includes('settings.json') && viewOutputModal?.content && typeof setEditableSettingsText === 'function') {
+        const formatted = formatJsonText(viewOutputModal.content);
+        setEditableSettingsText(formatted);
+      }
       setTimeout(() => {
         if (modalContentRef && modalContentRef.current) {
           modalContentRef.current.scrollTop = 0;
         }
       }, 100);
     }
-  }, [viewOutputModal?.isOpen]);
+  }, [viewOutputModal?.isOpen, viewOutputModal?.content]);
 
   React.useEffect(() => {
     if (installDriverModal?.isOpen) {
@@ -881,8 +902,10 @@ export function AgentModals(props: any) {
       if (props.showToast) {
         if (result.access_type === 'mac_verified') {
           props.showToast('✔ MAC đã khớp CRM — cấp quyền ngay', 'success', 3000);
-        } else {
+        } else if (result.auto_approved_via) {
           props.showToast(`✔ Đã duyệt tự động qua phiếu công việc #${result.auto_approved_via}`, 'success', 4000);
+        } else {
+          props.showToast(`✔ Đã kết nối IP ${targetIp}`, 'success', 3000);
         }
       }
       setDirectOverrideReason('');
@@ -2959,7 +2982,7 @@ export function AgentModals(props: any) {
                 <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}>
                   <textarea
                     ref={modalContentRef}
-                    value={editableSettingsText}
+                    value={editableSettingsText || formatJsonText(viewOutputModal.content)}
                     onChange={(e) => setEditableSettingsText(e.target.value)}
                     style={{
                       flex: 1,
@@ -3044,7 +3067,7 @@ export function AgentModals(props: any) {
                     fontSize: '0.78rem',
                   }}
                   onClick={() => {
-                    navigator.clipboard.writeText(viewOutputModal.title.includes('settings.json') ? editableSettingsText : formatJsonText(viewOutputModal.content)).catch(() => {});
+                    navigator.clipboard.writeText(viewOutputModal.title.includes('settings.json') ? (editableSettingsText || formatJsonText(viewOutputModal.content)) : formatJsonText(viewOutputModal.content)).catch(() => {});
                   }}
                 >
                   📋 Copy

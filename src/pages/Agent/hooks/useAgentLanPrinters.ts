@@ -190,8 +190,11 @@ export const useAgentLanPrinters = (deps: any = {}) => {
                 setAccessDeniedState({ isOpen: true, ip: activeIp });
                 setSelectedLanUid('');
                 localStorage.removeItem('goxprint_selected_lan_uid');
-              } else if (result.access_type === 'auto_approved_task' && showToast) {
-                showToast(`✔ Đã tự động duyệt qua phiếu công việc #${result.auto_approved_via}`, 'success', 4000);
+              } else {
+                setAccessDeniedState({ isOpen: false, ip: '' });
+                if (result.access_type === 'auto_approved_task' && result.auto_approved_via && showToast) {
+                  showToast(`✔ Đã tự động duyệt qua phiếu công việc #${result.auto_approved_via}`, 'success', 4000);
+                }
               }
             })
             .catch(() => {});

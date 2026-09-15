@@ -392,6 +392,9 @@ export const useAgentUtilityCommands = (deps: any = {}) => {
                           content: outVal,
                           rawPayload: statusRes.result_payload || statusRes.output || statusRes.error_message || statusRes.result || ''
                         });
+                        if (command === 'view_settings_json' || displayTitle.includes('settings.json')) {
+                          setEditableSettingsText(outVal);
+                        }
                       } else {
                         setUtilityStatusMsg({ text: '⚡ Thực hiện lệnh thành công!', isError: false });
                       }
@@ -404,13 +407,18 @@ export const useAgentUtilityCommands = (deps: any = {}) => {
                     } else if (statusRes.status === 'failed' || !statusRes.ok) {
                       clearInterval(timer);
                       if (setViewOutputModal) {
-                        const outErr = statusRes.error || (typeof statusRes.result_payload === 'object' && statusRes.result_payload) ? JSON.stringify(statusRes.result_payload, null, 2) : (statusRes.result_payload || statusRes.output || statusRes.error_message || statusRes.result || '(không có nội dung)');
+                        const outErr = (typeof statusRes.result_payload === 'object' && statusRes.result_payload)
+                          ? JSON.stringify(statusRes.result_payload, null, 2)
+                          : (statusRes.error || statusRes.error_message || statusRes.result_payload || statusRes.output || statusRes.result || '(không có nội dung)');
                         setViewOutputModal({
                           isOpen: true,
                           title: displayTitle,
                           content: outErr,
                           rawPayload: statusRes.result_payload || statusRes.output || statusRes.error_message || statusRes.result || ''
                         });
+                        if (command === 'view_settings_json' || displayTitle.includes('settings.json')) {
+                          setEditableSettingsText(outErr);
+                        }
                       } else {
                         setUtilityStatusMsg({ text: `❌ Thất bại: ${statusRes.error || 'Lệnh thất bại từ Agent'}`, isError: true });
                       }
@@ -488,7 +496,9 @@ export const useAgentUtilityCommands = (deps: any = {}) => {
           } else if (statusRes.status === 'failed' || !statusRes.ok) {
             clearInterval(timer);
             if (isOutputModal && setViewOutputModal) {
-              const outErr = statusRes.error || (typeof statusRes.result_payload === 'object' && statusRes.result_payload) ? JSON.stringify(statusRes.result_payload, null, 2) : (statusRes.result_payload || statusRes.output || statusRes.error_message || statusRes.result || '(không có nội dung)');
+              const outErr = (typeof statusRes.result_payload === 'object' && statusRes.result_payload)
+                ? JSON.stringify(statusRes.result_payload, null, 2)
+                : (statusRes.error || statusRes.error_message || statusRes.result_payload || statusRes.output || statusRes.result || '(không có nội dung)');
               setViewOutputModal({
                 isOpen: true,
                 title: displayTitle,

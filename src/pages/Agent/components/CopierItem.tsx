@@ -80,7 +80,6 @@ export function CopierItem({
   const [showSelectAgentModal, setShowSelectAgentModal] = React.useState(false);
   const [showAuthModal, setShowAuthModal] = React.useState(false);
   const [selectedAgentForSync, setSelectedAgentForSync] = React.useState<string>('');
-  const [vncCheckLoading, setVncCheckLoading] = React.useState(false);
 
   React.useEffect(() => {
     const defaultUid = p?.agent_uid || activeAgentUid || selectedAgentUid || '';
@@ -491,43 +490,6 @@ export function CopierItem({
                                   title="Tính năng đang khóa"
                                 >
                                   🔒 Remote Panel
-                                </button>
-                              )}
-  
-                              {pType.includes('toshiba') && (
-                                <button
-                                  style={{ ...styles.smallBtn, flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '8px 12px', display: 'flex', alignItems: 'center', borderColor: '#a78bfa', color: '#a78bfa', opacity: vncCheckLoading ? 0.6 : 1, cursor: vncCheckLoading ? 'not-allowed' : 'pointer' }}
-                                  disabled={vncCheckLoading}
-                                  onClick={async () => {
-                                    const targetAgent = selectedAgentUid || p.agent_uid || activeAgentUid || (selectedLan?.agents?.[0]?.agent_uid) || '';
-                                    if (!targetAgent) {
-                                      showToast('Không tìm thấy Agent nào trong dải mạng LAN này', 'error');
-                                      return;
-                                    }
-                                    const mac = (p.mac_address || p.mac_id || '').trim();
-                                    setVncCheckLoading(true);
-                                    try {
-                                      const token = useAuthStore.getState().token;
-                                      const result = await verifyNetworkAccess(token || '', {
-                                        macs: mac ? [mac] : [],
-                                        request_type: 'lookup',
-                                      });
-                                      if (!result.ok || result.access !== 'full') {
-                                        showToast(`❌ ${result.error || 'Không được phép remote vào máy in này'}`, 'error', 4000);
-                                        return;
-                                      }
-                                      if (handleStartToshibaVnc) {
-                                        handleStartToshibaVnc(p.ip, p.name || p.printer_name || 'Toshiba', targetAgent);
-                                      }
-                                    } catch (err: any) {
-                                      showToast(`Lỗi kiểm tra quyền: ${err.message}`, 'error');
-                                    } finally {
-                                      setVncCheckLoading(false);
-                                    }
-                                  }}
-                                  title="Xem & điều khiển màn hình cảm ứng máy in từ xa"
-                                >
-                                  {vncCheckLoading ? '⏳ Đang kiểm tra...' : '📺 VNC Remote'}
                                 </button>
                               )}
                             </div>

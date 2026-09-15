@@ -73,7 +73,7 @@ export function ScanDestinations({
               </span>
 
               {/* 2. Name */}
-              <span style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--color-text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+              <span style={{ fontWeight: 600, fontSize: '0.675rem', color: 'var(--color-text)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                 {entry.name}
                 {(entry.warning || entry.error) && (
                   <span style={{ color: '#fbbf24', cursor: 'help' }} title={entry.warning || entry.error}>
