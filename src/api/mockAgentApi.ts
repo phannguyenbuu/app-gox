@@ -76,6 +76,8 @@ export async function mockGetAgents(lanUid?: string): Promise<Agent[]> {
             id: agent.agent_uid,
             hostname: agent.hostname || agent.agent_uid || 'Agent',
             ipAddress: agent.local_ip || '',
+            public_ip: agent.public_ip || '',
+            publicIp: agent.public_ip || '',
             os: 'Windows',
             status: (agent.is_agent_active ?? agent.is_online) ? 'online' : 'offline',
             lastSeen: agent.updated_at || '',
@@ -397,5 +399,19 @@ export async function getWorkstationIp(params: { agent_uid?: string; lan_uid?: s
   if (params.lan_uid) query.append('lan_uid', params.lan_uid);
   if (params.mac) query.append('mac', params.mac);
   return fetchApi(`/api/public/ip/workstation?${query.toString()}`);
+}
+
+export async function getAgents(params?: { lead?: string; lan_uid?: string; agent_uid?: string; status?: string }): Promise<any> {
+  const query = new URLSearchParams();
+  if (params?.lead) query.append('lead', params.lead);
+  if (params?.lan_uid) query.append('lan_uid', params.lan_uid);
+  if (params?.agent_uid) query.append('agent_uid', params.agent_uid);
+  if (params?.status) query.append('status', params.status);
+  const qs = query.toString();
+  return fetchApi(`/api/agents${qs ? `?${qs}` : ''}`);
+}
+
+export async function getAgent(agentUid: string): Promise<any> {
+  return fetchApi(`/api/agents/${encodeURIComponent(agentUid)}`);
 }
 

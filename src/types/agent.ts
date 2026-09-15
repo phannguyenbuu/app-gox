@@ -37,6 +37,8 @@ export interface Agent {
   id: string;
   hostname: string;
   ipAddress: string;
+  public_ip?: string;
+  publicIp?: string;
   os: string;
   status: 'online' | 'offline';
   lastSeen: string;
