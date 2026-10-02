@@ -10,6 +10,8 @@ interface RicohModel {
     model: string;
     support_url?: string;
     drivers: Record<string, string>;
+    all_exe?: string[];
+    total_files?: number;
 }
 
 interface ToshibaDriver {
@@ -69,7 +71,14 @@ function getModelName(_brand: Brand, m: AnyModel): string {
 }
 
 function getDriverCount(brand: Brand, m: AnyModel): number {
-    if (brand === 'ricoh') return Object.keys((m as RicohModel).drivers || {}).length;
+    if (brand === 'ricoh') {
+        const rm = m as RicohModel;
+        const dictCount = Object.keys(rm.drivers || {}).length;
+        // Count extra exe files not already in drivers dict
+        const driverUrls = new Set(Object.values(rm.drivers || {}));
+        const extraExe = (rm.all_exe || []).filter(u => !driverUrls.has(u));
+        return dictCount + extraExe.length;
+    }
     if (brand === 'toshiba') return (m as ToshibaModel).total_windows_drivers;
     if (brand === 'fujifilm') return ((m as FujifilmModel).all_links || []).length;
     return 0;
@@ -102,16 +111,55 @@ function DriverPanel({ brand, model, onClose }: { brand: Brand; model: AnyModel;
     const renderDrivers = () => {
         if (brand === 'ricoh') {
             const m = model as RicohModel;
-            const entries = Object.entries(m.drivers || {});
-            if (!entries.length)
-                return (
-                    <NoDriver label="Ricoh" url={m.support_url} />
-                );
+
+            // Helper: guess label for an unnamed exe URL
+            const guessLabel = (url: string): string => {
+                const fn = url.split('/').pop()?.toLowerCase() || '';
+                if (fn.includes('driver_web_installer')) return '🔧 Web Installer (Tất cả Drivers)';
+                if (fn.includes('printerdiagnostictool')) return '🛠️ Printer Diagnostic Tool';
+                // z9928x = PCL6 Driver for Universal Print
+                if (/z9928|z9929|z9430|z8912|z8913/.test(fn)) return 'PCL6 Driver for Universal Print';
+                // z0636x, z0640x = model-specific PCL6
+                if (/z0636|z0640|z0641/.test(fn)) return 'PCL6 Driver';
+                // z0499x = RPCS
+                if (/z0499|z049/.test(fn)) return 'RPCS Driver';
+                // z0639x, z0638x = Generic PCL5e
+                if (/z0639|z0638|z063b|z063c|z063d|z063e|z063f/.test(fn)) return 'Generic PCL5e Driver';
+                // z0634x = PostScript3
+                if (/z0634|z0635|z0630|z0631|z0632|z0633/.test(fn)) return 'PostScript3 Driver (Universal)';
+                if (/z064/.test(fn)) return 'PCL6 Driver';
+                return `Driver Package (${url.split('/').pop() || ''})`;
+            };
+
+            // Sort key: Universal Print first, then named PCL6, PS3, PCL5e, RPCS, Web Installer, Diagnostic last
+            const sortKey = (name: string): number => {
+                const n = name.toLowerCase();
+                if (n.includes('universal print')) return 0;
+                if (n === 'pcl 6 driver' || n === 'pcl6 driver') return 1;
+                if (n.includes('postscript')) return 2;
+                if (n.includes('pcl5') || n.includes('pcl 5') || n.includes('generic pcl')) return 3;
+                if (n.includes('rpcs')) return 4;
+                if (n.includes('web installer')) return 5;
+                if (n.includes('diagnostic')) return 9;
+                return 6;
+            };
+
+            // Build unified list: named drivers dict first, then extra all_exe
+            const driverUrls = new Set(Object.values(m.drivers || {}));
+            const allDrivers: { name: string; url: string }[] = [
+                ...Object.entries(m.drivers || {}).map(([k, v]) => ({ name: k, url: v })),
+                ...(m.all_exe || []).filter(u => !driverUrls.has(u)).map(u => ({ name: guessLabel(u), url: u })),
+            ];
+            allDrivers.sort((a, b) => sortKey(a.name) - sortKey(b.name));
+
+            if (!allDrivers.length)
+                return <NoDriver label="Ricoh" url={m.support_url} />;
+
             return (
                 <>
-                    <SectionLabel>Windows Print Drivers</SectionLabel>
-                    {entries.map(([type, url]) => (
-                        <DlRow key={type} name={type} sub={url.split('/').pop() || ''} url={url} ext="EXE" />
+                    <SectionLabel>Windows Print Drivers ({allDrivers.length})</SectionLabel>
+                    {allDrivers.map((d, i) => (
+                        <DlRow key={i} name={d.name} sub={d.url.split('/').pop() || ''} url={d.url} ext="EXE" />
                     ))}
                     {m.support_url && (
                         <GhostLink url={m.support_url} label="Xem tất cả trên Ricoh Support" />
@@ -124,10 +172,25 @@ function DriverPanel({ brand, model, onClose }: { brand: Brand; model: AnyModel;
             const m = model as ToshibaModel;
             if (!m.drivers?.length)
                 return <NoDriver label="Toshiba" url={m.product_url} />;
+
+            // Sort: Universal Printer 2 first, Windows Generic second, then PCL, PS, rest
+            const sortedDrivers = [...m.drivers].sort((a, b) => {
+                const toshKey = (d: ToshibaDriver) => {
+                    const n = (d.description || d.name || '').toLowerCase();
+                    if (n.includes('universal printer 2')) return 0;
+                    if (n.includes('universal')) return 1;
+                    if (n.includes('windows generic')) return 2;
+                    if (n.includes('pcl')) return 3;
+                    if (n.includes('ps driver') || n.includes('postscript')) return 4;
+                    return 5;
+                };
+                return toshKey(a) - toshKey(b);
+            });
+
             return (
                 <>
-                    <SectionLabel>Print Drivers</SectionLabel>
-                    {m.drivers.map((d, i) => (
+                    <SectionLabel>Print Drivers ({sortedDrivers.length})</SectionLabel>
+                    {sortedDrivers.map((d, i) => (
                         <DlRow
                             key={i}
                             name={d.description || d.name}

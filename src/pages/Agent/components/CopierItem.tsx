@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { styles } from '../AgentStyles';
 import { GlowCard } from '../../../components/ui/GlowCard';
 import { ScanDestinations } from './ScanDestinations';
-import { fetchApi, triggerAgentUtilityExec } from '../../../api/mockAgentApi';
+import { fetchApi, triggerAgentUtilityExec, getCommandStatus } from '../../../api/mockAgentApi';
 import { verifyNetworkAccess } from '../../../api/mockApi';
 import { useAuthStore } from '../../../stores/authStore';
 
@@ -41,6 +41,7 @@ export interface CopierItemProps {
   handleEditIP: (pTarget: any, entry: any) => void;
   handleDeleteDest: (pTarget: any, entry: any) => void;
   handleStartToshibaVnc?: (printerIp: string, printerName: string, agentUid: string) => void;
+  setViewOutputModal?: (modal: any) => void;
 }
 
 export function CopierItem({
@@ -76,6 +77,7 @@ export function CopierItem({
   handleRemoteInstallDriver,
   setPublicFtpData,
   handleStartToshibaVnc,
+  setViewOutputModal,
 }: CopierItemProps) {
   const [showSelectAgentModal, setShowSelectAgentModal] = React.useState(false);
   const [showAuthModal, setShowAuthModal] = React.useState(false);
@@ -262,6 +264,88 @@ export function CopierItem({
       showToast('Cập nhật FTP thất bại', 'error');
     }
   }, [selectedAgentUid, selectedLan, showToast]);
+
+  const [isPrintingTest, setIsPrintingTest] = React.useState(false);
+
+  const handlePrintTest = React.useCallback(async () => {
+    const targetAgent = selectedAgentUid || p.agent_uid || activeAgentUid || (selectedLan?.agents?.find((a: any) => a.is_agent_active || a.is_online)?.agent_uid) || (selectedLan?.agents?.[0]?.agent_uid) || '';
+    if (!targetAgent) {
+      showToast('Không tìm thấy Agent nào online trong mạng LAN này', 'error');
+      return;
+    }
+
+    const printerLabel = p.name || p.printer_name || p.model || p.ip || 'Photocopy';
+    setIsPrintingTest(true);
+    showToast(`Đang gửi lệnh in test tới ${printerLabel}...`, 'info');
+
+    try {
+      const res = await triggerAgentUtilityExec(targetAgent, 'print_test_page', '', {
+        target_ip: p.ip || '',
+        printer_ip: p.ip || '',
+        ip: p.ip || '',
+        printer_name: p.name || p.printer_name || p.model || '',
+        target_name: p.name || p.printer_name || p.model || '',
+        amc_id: p.amc_id || p.id || p.printer_id || '',
+        printer_id: p.id || p.amc_id || ''
+      });
+
+      if (!res || !res.ok || !res.command_id) {
+        setIsPrintingTest(false);
+        showToast(res?.error || 'Không thể tạo lệnh in test trên Agent', 'error');
+        return;
+      }
+
+      const cmdId = res.command_id;
+      const startTime = Date.now();
+      const pollTimer = setInterval(async () => {
+        try {
+          const elapsed = Date.now() - startTime;
+          if (elapsed > 45000) {
+            clearInterval(pollTimer);
+            setIsPrintingTest(false);
+            showToast('Quá thời gian chờ phản hồi lệnh in (45s)', 'error');
+            return;
+          }
+
+          const statusRes = await getCommandStatus(cmdId);
+          if (statusRes.status === 'success') {
+            clearInterval(pollTimer);
+            setIsPrintingTest(false);
+            showToast(`Đã in trang in thử thành công tới ${printerLabel}!`, 'success');
+            if (setViewOutputModal) {
+              const outVal = (typeof statusRes.result_payload === 'object' && statusRes.result_payload)
+                ? JSON.stringify(statusRes.result_payload, null, 2)
+                : (statusRes.result_payload || statusRes.output || statusRes.error_message || statusRes.result || 'Thành công');
+              setViewOutputModal({
+                isOpen: true,
+                title: `Kết quả in thử: ${printerLabel}`,
+                content: outVal,
+                rawPayload: statusRes.result_payload || statusRes.output || ''
+              });
+            }
+          } else if (statusRes.status === 'failed' || !statusRes.ok) {
+            clearInterval(pollTimer);
+            setIsPrintingTest(false);
+            const errDetail = statusRes.error || statusRes.error_message || statusRes.output || 'Lệnh in thất bại từ Agent';
+            showToast(`Lỗi in: ${errDetail}`, 'error');
+            if (setViewOutputModal) {
+              setViewOutputModal({
+                isOpen: true,
+                title: `Lỗi in thử: ${printerLabel}`,
+                content: errDetail,
+                rawPayload: errDetail
+              });
+            }
+          }
+        } catch (pollErr: any) {
+          // Retry next tick
+        }
+      }, 1500);
+    } catch (err: any) {
+      setIsPrintingTest(false);
+      showToast(`Lỗi gửi lệnh in test: ${err.message || err}`, 'error');
+    }
+  }, [p, selectedAgentUid, activeAgentUid, selectedLan, showToast, setViewOutputModal]);
 
   return (
                           <div
@@ -481,7 +565,19 @@ export function CopierItem({
                               >
                                 💻 Cài driver
                               </button>
-  
+
+                              <button
+                                style={{ ...styles.smallBtn, flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '8px 12px', display: 'flex', alignItems: 'center', borderColor: '#10b981', color: '#10b981' }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handlePrintTest();
+                                }}
+                                disabled={isPrintingTest || !selectedLan || !selectedLan.agents || selectedLan.agents.length === 0}
+                                title="In trang in thử (Test Page) trực tiếp tới máy photocopy này qua Agent"
+                              >
+                                {isPrintingTest ? '⌛ Đang in...' : '🖨️ In test'}
+                              </button>
+
                               {pType.includes('ricoh') && (p.name || p.printer_name || '').toLowerCase().includes('6503') && (
                                 <button
                                   style={{ ...styles.smallBtn, flex: 1, justifyContent: 'center', fontSize: '0.8rem', padding: '8px 12px', display: 'flex', alignItems: 'center', borderColor: '#34d399', color: '#34d399', opacity: 0.5, cursor: 'not-allowed' }}

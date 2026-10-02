@@ -2601,17 +2601,21 @@ export function AgentModals(props: any) {
                   </label>
                   {(() => {
                     const catalogDrivers: { name: string; url: string; label: string; brand: string; model: string }[] = [];
+                    const seenUrls = new Set<string>();
                     if (installDriverModal.suggestedDrivers && Array.isArray(installDriverModal.suggestedDrivers) && installDriverModal.suggestedDrivers.length > 0) {
                       installDriverModal.suggestedDrivers.forEach((catItem: any) => {
                         if (catItem.drivers && Array.isArray(catItem.drivers)) {
                           catItem.drivers.forEach((drv: any) => {
-                            catalogDrivers.push({
-                              name: drv.name,
-                              url: drv.url,
-                              brand: catItem.brand || installDriverModal.brand,
-                              model: catItem.model || installDriverModal.model,
-                              label: `[${String(catItem.brand || installDriverModal.brand || '').toUpperCase()} ${catItem.model || installDriverModal.model}] ${drv.name}`
-                            });
+                            if (drv.url && !seenUrls.has(drv.url)) {
+                              seenUrls.add(drv.url);
+                              catalogDrivers.push({
+                                name: drv.name,
+                                url: drv.url,
+                                brand: catItem.brand || installDriverModal.brand,
+                                model: catItem.model || installDriverModal.model,
+                                label: `[${String(catItem.brand || installDriverModal.brand || '').toUpperCase()} ${catItem.model || installDriverModal.model}] ${drv.name}`
+                              });
+                            }
                           });
                         }
                       });

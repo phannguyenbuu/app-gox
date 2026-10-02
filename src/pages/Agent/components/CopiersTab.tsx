@@ -100,6 +100,7 @@ export function CopiersTab(props: any) {
     utilitySettingsLoading,
     utilityStatusMsg,
     viewOutputModal,
+    setViewOutputModal,
     vncTunnelLoading,
     webPreviewHistory,
     webPreviewHistoryIndex,
@@ -304,6 +305,7 @@ export function CopiersTab(props: any) {
                   handleRemoteInstallDriver={handleRemoteInstallDriver || (() => {})}
                   setPublicFtpData={setPublicFtpData}
                   handleStartToshibaVnc={handleStartToshibaVnc}
+                  setViewOutputModal={setViewOutputModal}
                 />
               );
             })
