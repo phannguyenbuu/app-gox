@@ -1347,7 +1347,7 @@ export default function PayItPage() {
                 transition: 'all 0.2s'
               }}
             >
-              🛑 HOÀN TẤT IN & THANH TOÁN (KẾT THÚC SỚM)
+              🛑 KẾT THÚC
             </button>
 
             <div style={{ textAlign: 'center', marginTop: '10px', fontSize: '0.75rem', color: t.textMuted }}>
