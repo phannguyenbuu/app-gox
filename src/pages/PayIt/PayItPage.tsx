@@ -6,6 +6,8 @@ interface CounterData {
   total: number;
   bw: number;
   color: number;
+  copierBw?: number;
+  printerBw?: number;
   timestamp: number;
 }
 
@@ -61,12 +63,16 @@ export default function PayItPage() {
   const [searchParams] = useSearchParams();
 
   // Target printer parameters
-  const initialRef = routePrinterRef || searchParams.get('mac') || searchParams.get('ip') || '';
+  const initialRef = routePrinterRef || searchParams.get('mac') || searchParams.get('mac_id') || searchParams.get('ip') || '';
   const initialIp = searchParams.get('ip') || (initialRef.includes('.') ? initialRef : '');
   
   const [printerRef, setPrinterRef] = useState<string>(initialRef);
   const [printerIp, setPrinterIp] = useState<string>(initialIp);
   const [printerName, setPrinterName] = useState<string>(searchParams.get('name') || '');
+
+  // Counter snapshot on IDLE
+  const [previewCounter, setPreviewCounter] = useState<CounterData | null>(null);
+  const [isLoadingCounter, setIsLoadingCounter] = useState<boolean>(false);
 
   // Printer discovery state
   const [availablePrinters, setAvailablePrinters] = useState<PrinterItem[]>([]);
@@ -93,6 +99,107 @@ export default function PayItPage() {
   // Maximum session duration from agentapi.quanlymay (default: 30 minutes)
   const [maxMinutes, setMaxMinutes] = useState<number>(30);
   const [secondsRemaining, setSecondsRemaining] = useState<number>(30 * 60);
+
+  // Helper to query counter from Agent or VPS
+  const fetchCurrentCounter = useCallback(async (ip: string, mac?: string): Promise<CounterData> => {
+    if (!ip && !mac) {
+      return { total: 0, bw: 0, color: 0, timestamp: Date.now() };
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 1400);
+
+    // 1. Direct LAN Agent attempt (Port 9173 on local machine or LAN IP)
+    const agentHost = searchParams.get('agent_ip') || (window.location.hostname.match(/^\d+\.\d+\.\d+\.\d+$/) ? window.location.hostname : '127.0.0.1');
+    if (ip) {
+      try {
+        const localAgentUrl = `http://${agentHost}:9173/api/devices/action`;
+        const res = await fetch(localAgentUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ip, action: 'counter' }),
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.ok && data.payload) {
+            const p = data.payload;
+            const cd = p.counter_data || {};
+            const totalVal = Number(cd.total || p.total || p.counter || 0);
+            const copierVal = Number(cd.copier_bw || 0);
+            const printerVal = Number(cd.printer_bw || 0);
+            const bwVal = Number(copierVal + printerVal || cd.bw || p.bw || totalVal);
+            const colorVal = Number(cd.copier_full_color || cd.printer_full_color || cd.color || p.color || 0);
+            return { total: totalVal, bw: bwVal, color: colorVal, copierBw: copierVal, printerBw: printerVal, timestamp: Date.now() };
+          }
+        }
+      } catch {
+        // Local agent query failed or blocked by mixed-content, fallback to VPS
+      }
+    }
+
+    // 2. Query VPS /api/public/device/by-macs if MAC is provided
+    if (mac) {
+      try {
+        const apiHost = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
+        const res = await fetch(`${apiHost}/api/public/device/by-macs?macs=${encodeURIComponent(mac)}`);
+        if (res.ok) {
+          const data = await res.json();
+          const dev = data.devices && (data.devices[mac] || Object.values(data.devices)[0]) as any;
+          if (dev && dev.counter && Object.keys(dev.counter).length > 0) {
+            const c = dev.counter;
+            const totalVal = Number(c.total || 0);
+            const copierVal = Number(c.copier_bw || 0);
+            const printerVal = Number(c.printer_bw || 0);
+            const bwVal = Number(copierVal + printerVal || totalVal);
+            const colorVal = Number(c.copier_full_color || c.printer_full_color || 0);
+            return { total: totalVal, bw: bwVal, color: colorVal, copierBw: copierVal, printerBw: printerVal, timestamp: Date.now() };
+          }
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
+    // 3. Fallback to Cloud VPS API action
+    if (ip) {
+      try {
+        const apiHost = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
+        const vpsRes = await fetch(`${apiHost}/api/devices/action`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Token': 'change-me',
+            'X-API-Key': 'change-me'
+          },
+          body: JSON.stringify({ ip, action: 'counter' })
+        });
+        if (vpsRes.ok) {
+          const vpsData = await vpsRes.json();
+          if (vpsData.ok && vpsData.payload) {
+            const p = vpsData.payload;
+            const cd = p.counter_data || {};
+            const totalVal = Number(cd.total || p.total || p.counter || 0);
+            const copierVal = Number(cd.copier_bw || 0);
+            const printerVal = Number(cd.printer_bw || 0);
+            const bwVal = Number(copierVal + printerVal || cd.bw || p.bw || totalVal);
+            const colorVal = Number(cd.copier_full_color || cd.printer_full_color || cd.color || p.color || 0);
+            return { total: totalVal, bw: bwVal, color: colorVal, copierBw: copierVal, printerBw: printerVal, timestamp: Date.now() };
+          }
+        }
+      } catch {
+        // Fallback
+      }
+    }
+
+    return {
+      total: session?.currentCounter.total || 0,
+      bw: session?.currentCounter.bw || 0,
+      color: session?.currentCounter.color || 0,
+      timestamp: Date.now()
+    };
+  }, [searchParams, session]);
 
   // 1. Fetch available printers from LAN sites (VPS API) and Local Agent
   useEffect(() => {
@@ -204,7 +311,6 @@ export default function PayItPage() {
           setPrinterRef(list[0].ip);
           setPrinterName(list[0].name);
         } else {
-          // If no printers discovered at all, set empty and allow custom input
           setPrinterName('Chưa chọn máy in');
           setIsCustomMode(true);
         }
@@ -214,6 +320,72 @@ export default function PayItPage() {
     fetchPrinters();
     return () => { isMounted = false; };
   }, []);
+
+  // 2. Fetch real-time printer counter & status (NO 404s)
+  useEffect(() => {
+    let isMounted = true;
+    async function loadCurrentCounterSnapshot() {
+      const activeMac = currentPrinterObj?.macId || (printerRef.includes(':') || printerRef.includes('-') ? printerRef : '');
+      setIsLoadingCounter(true);
+
+      // A. If MAC is present, query /api/public/device/by-macs
+      if (activeMac) {
+        try {
+          const apiHost = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
+          const res = await fetch(`${apiHost}/api/public/device/by-macs?macs=${encodeURIComponent(activeMac)}`);
+          if (res.ok) {
+            const data = await res.json();
+            const dev = data.devices && (data.devices[activeMac] || Object.values(data.devices)[0]) as any;
+            if (isMounted && dev) {
+              if (dev.printer_name && (!printerName || printerName.startsWith('Máy in'))) {
+                setPrinterName(dev.printer_name);
+              }
+              if (dev.ip && dev.ip !== printerIp) {
+                setPrinterIp(dev.ip);
+              }
+              if (dev.counter && Object.keys(dev.counter).length > 0) {
+                const c = dev.counter;
+                const totalVal = Number(c.total || 0);
+                const copierVal = Number(c.copier_bw || 0);
+                const printerVal = Number(c.printer_bw || 0);
+                const bwVal = Number(copierVal + printerVal || totalVal);
+                const colorVal = Number(c.copier_full_color || c.printer_full_color || 0);
+                setPreviewCounter({
+                  total: totalVal,
+                  bw: bwVal,
+                  color: colorVal,
+                  copierBw: copierVal,
+                  printerBw: printerVal,
+                  timestamp: Date.now()
+                });
+                setIsLoadingCounter(false);
+                return;
+              }
+            }
+          }
+        } catch {
+          // Fallback
+        }
+      }
+
+      // B. If IP is available, query directly
+      if (printerIp) {
+        try {
+          const cnt = await fetchCurrentCounter(printerIp, activeMac);
+          if (isMounted && cnt && cnt.total > 0) {
+            setPreviewCounter(cnt);
+          }
+        } catch {
+          // Fallback
+        }
+      }
+
+      if (isMounted) setIsLoadingCounter(false);
+    }
+
+    loadCurrentCounterSnapshot();
+    return () => { isMounted = false; };
+  }, [printerRef, printerIp, fetchCurrentCounter]);
 
   // Handle changing printer from dropdown
   const handleSelectPrinter = (selectedIp: string) => {
@@ -257,171 +429,12 @@ export default function PayItPage() {
     window.history.replaceState({}, '', newUrl.toString());
   };
 
-  // 2. Load configuration from agentapi.quanlymay.com
-  useEffect(() => {
-    let isMounted = true;
-    async function loadConfigFromApi() {
-      if (!printerIp && !printerRef) return;
-      try {
-        const apiHost = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
-        const query = new URLSearchParams();
-        if (printerRef) query.append('printer_ref', printerRef);
-        if (printerIp) query.append('ip', printerIp);
-        const res = await fetch(`${apiHost}/api/payit/config?${query.toString()}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (isMounted && data) {
-            const m = Number(data.max_minutes || data.timeout_minutes || data.max_duration_minutes);
-            if (m && !isNaN(m) && m > 0) {
-              setMaxMinutes(m);
-              setSecondsRemaining(m * 60);
-            }
-            if (data.price_bw) setPriceBw(Number(data.price_bw));
-            if (data.price_color) setPriceColor(Number(data.price_color));
-            if (data.bank_account) setBankAccount(String(data.bank_account));
-            if (data.bank_code) setBankCode(String(data.bank_code));
-            if (data.bank_owner) setBankOwner(String(data.bank_owner));
-            if (data.printer_name && !printerName) setPrinterName(String(data.printer_name));
-          }
-        }
-      } catch {
-        // Fallback to defaults
-      }
-    }
-    loadConfigFromApi();
-    return () => { isMounted = false; };
-  }, [printerRef, printerIp]);
-
   // Live polling interval reference
   const intervalRef = useRef<any>(null);
   const timerRef = useRef<any>(null);
   const [pollCount, setPollCount] = useState<number>(0);
   const [lastPollError, setLastPollError] = useState<string>('');
   const [isTestMode, setIsTestMode] = useState<boolean>(false);
-
-  // Helper to query counter from Agent or VPS
-  const fetchCurrentCounter = useCallback(async (ip: string): Promise<CounterData> => {
-    if (isTestMode) {
-      return new Promise((resolve) => {
-        setTimeout(() => {
-          setSession((prev) => {
-            if (!prev) return prev;
-            const diff = Math.floor(Math.random() * 2);
-            return {
-              ...prev,
-              currentCounter: {
-                ...prev.currentCounter,
-                total: prev.currentCounter.total + diff,
-                bw: prev.currentCounter.bw + diff,
-                timestamp: Date.now()
-              }
-            };
-          });
-          resolve({
-            total: (session?.currentCounter.total || 1000) + 1,
-            bw: (session?.currentCounter.bw || 800) + 1,
-            color: session?.currentCounter.color || 200,
-            timestamp: Date.now()
-          });
-        }, 150);
-      });
-    }
-
-    if (!ip) {
-      return { total: 0, bw: 0, color: 0, timestamp: Date.now() };
-    }
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 1200);
-
-    // 1. If Tunnel URL is provided (e.g. from PrintAgentX tunnel)
-    const tunnelUrl = searchParams.get('tunnel_url');
-    if (tunnelUrl) {
-      try {
-        const cleanTunnel = tunnelUrl.replace(/\/$/, '');
-        const res = await fetch(`${cleanTunnel}/api/devices/action`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ip, action: 'counter' }),
-          signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.ok && data.payload) {
-            const p = data.payload;
-            const cd = p.counter_data || {};
-            const totalVal = Number(cd.total || p.total || p.counter || 0);
-            const bwVal = Number(cd.copier_bw || cd.printer_bw || cd.bw || p.bw || totalVal);
-            const colorVal = Number(cd.copier_full_color || cd.printer_full_color || cd.color || p.color || 0);
-            return { total: totalVal, bw: bwVal, color: colorVal, timestamp: Date.now() };
-          }
-        }
-      } catch {
-        // Fallback to next method
-      }
-    }
-
-    // 2. Direct LAN Agent attempt (Port 9173 on local machine or LAN IP)
-    const agentHost = searchParams.get('agent_ip') || (window.location.hostname.match(/^\d+\.\d+\.\d+\.\d+$/) ? window.location.hostname : '127.0.0.1');
-    try {
-      const localAgentUrl = `http://${agentHost}:9173/api/devices/action`;
-      const res = await fetch(localAgentUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip, action: 'counter' }),
-        signal: controller.signal
-      });
-      clearTimeout(timeoutId);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.ok && data.payload) {
-          const p = data.payload;
-          const cd = p.counter_data || {};
-          const totalVal = Number(cd.total || p.total || p.counter || 0);
-          const bwVal = Number(cd.copier_bw || cd.printer_bw || cd.bw || p.bw || totalVal);
-          const colorVal = Number(cd.copier_full_color || cd.printer_full_color || cd.color || p.color || 0);
-          return { total: totalVal, bw: bwVal, color: colorVal, timestamp: Date.now() };
-        }
-      }
-    } catch {
-      // Local LAN failed or blocked by mixed-content, fallback to VPS
-    }
-
-    // 3. Fallback to Cloud VPS API (agentapi.quanlymay.com)
-    try {
-      const apiHost = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
-      const vpsRes = await fetch(`${apiHost}/api/devices/action`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-API-Token': 'change-me',
-          'X-API-Key': 'change-me'
-        },
-        body: JSON.stringify({ ip, action: 'counter' })
-      });
-      if (vpsRes.ok) {
-        const vpsData = await vpsRes.json();
-        if (vpsData.ok && vpsData.payload) {
-          const p = vpsData.payload;
-          const cd = p.counter_data || {};
-          const totalVal = Number(cd.total || p.total || p.counter || 0);
-          const bwVal = Number(cd.copier_bw || cd.printer_bw || cd.bw || p.bw || totalVal);
-          const colorVal = Number(cd.copier_full_color || cd.printer_full_color || cd.color || p.color || 0);
-          return { total: totalVal, bw: bwVal, color: colorVal, timestamp: Date.now() };
-        }
-      }
-    } catch (e: any) {
-      setLastPollError(e?.message || 'Không thể kết nối đến máy in');
-    }
-
-    return {
-      total: session?.currentCounter.total || 0,
-      bw: session?.currentCounter.bw || 0,
-      color: session?.currentCounter.color || 0,
-      timestamp: Date.now()
-    };
-  }, [isTestMode, session]);
 
   const stopAllLoops = useCallback(() => {
     if (intervalRef.current) {
@@ -451,16 +464,19 @@ export default function PayItPage() {
     setPollCount(0);
     setSecondsRemaining(maxMinutes * 60);
 
-    // Initial counter snapshot
-    const initialCounter = await fetchCurrentCounter(printerIp);
+    // Initial counter snapshot: use previewCounter if valid, or fetch live
+    let initialCounter = previewCounter;
+    if (!initialCounter || initialCounter.total === 0) {
+      initialCounter = await fetchCurrentCounter(printerIp, currentPrinterObj?.macId);
+    }
 
     const newSession: PayItSession = {
       sessionId: `PAY-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 899 + 100)}`,
       printerRef: printerIp,
       printerName: printerName || `Máy in ${printerIp}`,
       startTime: Date.now(),
-      initialCounter,
-      currentCounter: { ...initialCounter },
+      initialCounter: initialCounter || { total: 0, bw: 0, color: 0, timestamp: Date.now() },
+      currentCounter: { ...(initialCounter || { total: 0, bw: 0, color: 0, timestamp: Date.now() }) },
       priceBw,
       priceColor
     };
@@ -470,15 +486,35 @@ export default function PayItPage() {
 
     // 1. Repeat 1s polling loop
     intervalRef.current = setInterval(async () => {
-      try {
-        const counter = await fetchCurrentCounter(printerIp);
+      if (isTestMode) {
         setSession((prev) => {
           if (!prev) return prev;
+          const diff = Math.floor(Math.random() * 2);
           return {
             ...prev,
-            currentCounter: counter
+            currentCounter: {
+              ...prev.currentCounter,
+              total: prev.currentCounter.total + diff,
+              bw: prev.currentCounter.bw + diff,
+              timestamp: Date.now()
+            }
           };
         });
+        setPollCount((c) => c + 1);
+        return;
+      }
+
+      try {
+        const counter = await fetchCurrentCounter(printerIp, currentPrinterObj?.macId);
+        if (counter && counter.total > 0) {
+          setSession((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              currentCounter: counter
+            };
+          });
+        }
         setPollCount((c) => c + 1);
         setLastPollError('');
       } catch (err: any) {
@@ -756,7 +792,7 @@ export default function PayItPage() {
               📱 Mã QR dán lên máy in
             </h3>
             <p style={{ margin: '0 0 16px 0', fontSize: '0.8rem', color: t.textMuted }}>
-              Dán mã này lên <b>{printerName}</b> ({printerIp}) để khách quét là vào thẳng phiên in của máy này.
+              Dán mã này lên <b>{printerName}</b> ({activeMac || printerIp}) để khách quét là vào thẳng máy này.
             </p>
 
             <div style={{
@@ -842,14 +878,14 @@ export default function PayItPage() {
               border: `1px solid ${t.innerBorder}`,
               borderRadius: '14px',
               padding: '14px 16px',
-              marginBottom: '20px',
+              marginBottom: '16px',
               textAlign: 'left'
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                 <label style={{ fontSize: '0.8rem', fontWeight: 700, color: t.textMuted, display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <span>🖨️</span> Chọn máy in / photocopy:
                 </label>
-                {printerIp && (
+                {(activeMac || printerIp) && (
                   <button
                     onClick={() => setShowQrModal(true)}
                     style={{
@@ -948,48 +984,90 @@ export default function PayItPage() {
               color: isLight ? '#059669' : '#34d399',
               fontSize: '0.8rem',
               fontWeight: 700,
-              marginBottom: '16px'
+              marginBottom: '12px'
             }}>
               🟢 Sẵn sàng mở phiên in
             </div>
 
-            <h2 style={{ margin: '0 0 6px 0', fontSize: '1.4rem', fontWeight: 800, color: t.text }}>
+            <h2 style={{ margin: '0 0 4px 0', fontSize: '1.4rem', fontWeight: 800, color: t.text }}>
               {printerName || 'Máy Photocopy'}
             </h2>
-            <p style={{ margin: '0 0 20px 0', fontSize: '0.85rem', color: t.textMuted }}>
+            <p style={{ margin: '0 0 16px 0', fontSize: '0.85rem', color: t.textMuted }}>
               IP máy: <code style={{ color: isLight ? '#0284c7' : '#38bdf8', fontWeight: 700, fontSize: '0.95rem' }}>{printerIp || 'Chưa thiết lập'}</code>
+              {activeMac && <span style={{ marginLeft: '8px', fontSize: '0.78rem' }}>(MAC: <b>{activeMac}</b>)</span>}
             </p>
 
-            {/* Price tags */}
+            {/* REALTIME CURRENT COUNTER CARD (TOTAL NUMBER OF PAGES) */}
             <div style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr 1fr',
-              gap: '12px',
-              marginBottom: '24px'
+              background: t.innerCard,
+              border: `1.5px solid ${isLight ? '#38bdf8' : 'rgba(56, 189, 248, 0.35)'}`,
+              borderRadius: '16px',
+              padding: '18px 16px',
+              marginBottom: '22px',
+              boxShadow: isLight ? '0 4px 12px rgba(56, 189, 248, 0.08)' : 'none'
             }}>
               <div style={{
-                background: t.innerCard,
-                border: `1px solid ${t.innerBorder}`,
-                borderRadius: '12px',
-                padding: '12px'
+                fontSize: '0.78rem',
+                color: isLight ? '#0284c7' : '#38bdf8',
+                fontWeight: 700,
+                letterSpacing: '0.5px',
+                textTransform: 'uppercase',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px'
               }}>
-                <div style={{ fontSize: '0.75rem', color: t.textMuted, fontWeight: 500 }}>Trắng đen (B&W)</div>
-                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: t.text, marginTop: '4px' }}>
-                  {priceBw.toLocaleString()} <span style={{ fontSize: '0.75rem', fontWeight: 500 }}>đ/trang</span>
-                </div>
+                <span>📟</span> TỔNG SỐ TRANG IN (COUNTER HIỆN CÓ CỦA MÁY)
               </div>
 
-              <div style={{
-                background: t.innerCard,
-                border: `1px solid ${t.innerBorder}`,
-                borderRadius: '12px',
-                padding: '12px'
-              }}>
-                <div style={{ fontSize: '0.75rem', color: t.textMuted, fontWeight: 500 }}>In Màu (Color)</div>
-                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: isLight ? '#0284c7' : '#38bdf8', marginTop: '4px' }}>
-                  {priceColor.toLocaleString()} <span style={{ fontSize: '0.75rem', fontWeight: 500 }}>đ/trang</span>
+              {previewCounter && previewCounter.total > 0 ? (
+                <>
+                  <div style={{
+                    fontSize: '3.2rem',
+                    fontWeight: 900,
+                    color: isLight ? '#0f172a' : '#f8fafc',
+                    lineHeight: 1.1,
+                    margin: '10px 0 6px 0',
+                    letterSpacing: '-1px'
+                  }}>
+                    {previewCounter.total.toLocaleString()}
+                    <span style={{ fontSize: '1rem', fontWeight: 600, color: t.textMuted, marginLeft: '6px' }}>trang</span>
+                  </div>
+
+                  {/* Sub breakdown: Copier vs Printer */}
+                  <div style={{
+                    display: 'flex',
+                    justifyContent: 'center',
+                    gap: '16px',
+                    fontSize: '0.82rem',
+                    color: t.textMuted,
+                    marginTop: '8px',
+                    paddingTop: '8px',
+                    borderTop: `1px dashed ${t.innerBorder}`
+                  }}>
+                    {previewCounter.copierBw !== undefined && previewCounter.copierBw > 0 && (
+                      <div>
+                        📸 Bản chụp (Copier): <b style={{ color: t.text }}>{previewCounter.copierBw.toLocaleString()}</b>
+                      </div>
+                    )}
+                    {previewCounter.printerBw !== undefined && previewCounter.printerBw > 0 && (
+                      <div>
+                        🖨️ Bản in (Printer): <b style={{ color: t.text }}>{previewCounter.printerBw.toLocaleString()}</b>
+                      </div>
+                    )}
+                    {(!previewCounter.copierBw && !previewCounter.printerBw) && (
+                      <div>
+                        Trắng đen (B&W): <b style={{ color: t.text }}>{previewCounter.bw.toLocaleString()}</b>
+                        {previewCounter.color > 0 && <span> • Màu: <b style={{ color: '#38bdf8' }}>{previewCounter.color.toLocaleString()}</b></span>}
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div style={{ padding: '16px 0', fontSize: '0.88rem', color: t.textMuted, fontStyle: 'italic' }}>
+                  {isLoadingCounter ? '⏳ Đang đọc số counter từ máy in...' : 'Đang kết nối để đọc counter...'}
                 </div>
-              </div>
+              )}
             </div>
 
             {/* Start Button */}
@@ -1101,20 +1179,20 @@ export default function PayItPage() {
               textAlign: 'center'
             }}>
               <div style={{ fontSize: '0.85rem', color: t.textMuted, fontWeight: 600, letterSpacing: '0.5px' }}>
-                TỔNG SỐ TRANG ĐÃ IN TRONG PHIÊN
+                TỔNG SỐ TRANG ĐÃ IN TRONG PHIÊN NÀY
               </div>
               <div style={{
-                fontSize: '3.8rem',
+                fontSize: '4rem',
                 fontWeight: 900,
                 color: isLight ? '#0284c7' : '#38bdf8',
                 lineHeight: 1.1,
                 margin: '8px 0',
                 letterSpacing: '-1px'
               }}>
-                {printedTotal}
+                +{printedTotal}
               </div>
-              <div style={{ fontSize: '0.8rem', color: t.textMuted }}>
-                Số đếm ban đầu: <b>{session.initialCounter.total}</b> ➔ Hiện tại: <b>{session.currentCounter.total}</b>
+              <div style={{ fontSize: '0.85rem', color: t.textMuted, marginTop: '6px' }}>
+                Counter ban đầu: <b>{session.initialCounter.total.toLocaleString()}</b> ➔ Hiện tại: <b style={{ color: isLight ? '#0284c7' : '#38bdf8' }}>{session.currentCounter.total.toLocaleString()}</b>
               </div>
             </div>
 
@@ -1133,7 +1211,7 @@ export default function PayItPage() {
               }}>
                 <div style={{ fontSize: '0.75rem', color: t.textMuted }}>Đen trắng (B&W)</div>
                 <div style={{ fontSize: '1.4rem', fontWeight: 800, marginTop: '2px' }}>
-                  {printedBw} <span style={{ fontSize: '0.75rem', fontWeight: 500 }}>trang</span>
+                  +{printedBw} <span style={{ fontSize: '0.75rem', fontWeight: 500 }}>trang</span>
                 </div>
                 <div style={{ fontSize: '0.72rem', color: t.textMuted, marginTop: '2px' }}>
                   {(printedBw * priceBw).toLocaleString()} đ
@@ -1148,7 +1226,7 @@ export default function PayItPage() {
               }}>
                 <div style={{ fontSize: '0.75rem', color: t.textMuted }}>Màu (Color)</div>
                 <div style={{ fontSize: '1.4rem', fontWeight: 800, color: isLight ? '#0284c7' : '#38bdf8', marginTop: '2px' }}>
-                  {printedColor} <span style={{ fontSize: '0.75rem', fontWeight: 500 }}>trang</span>
+                  +{printedColor} <span style={{ fontSize: '0.75rem', fontWeight: 500 }}>trang</span>
                 </div>
                 <div style={{ fontSize: '0.72rem', color: t.textMuted, marginTop: '2px' }}>
                   {(printedColor * priceColor).toLocaleString()} đ
@@ -1167,7 +1245,7 @@ export default function PayItPage() {
               alignItems: 'center',
               marginBottom: '20px'
             }}>
-              <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>Tạm tính hiện tại:</span>
+              <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>Tạm tính thanh toán:</span>
               <span style={{ fontSize: '1.2rem', fontWeight: 800, color: isLight ? '#059669' : '#10b981' }}>
                 {totalCost.toLocaleString()} VNĐ
               </span>
