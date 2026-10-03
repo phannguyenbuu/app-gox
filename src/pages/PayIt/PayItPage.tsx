@@ -1017,7 +1017,7 @@ export default function PayItPage() {
                 justifyContent: 'center',
                 gap: '6px'
               }}>
-                <span>📟</span> TỔNG SỐ TRANG IN (COUNTER HIỆN CÓ CỦA MÁY)
+                <span>📟</span> TỔNG SỐ TRANG IN
               </div>
 
               {previewCounter && previewCounter.total > 0 ? (
