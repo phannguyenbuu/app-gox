@@ -100,19 +100,92 @@ export default function PayItPage() {
   const [maxMinutes, setMaxMinutes] = useState<number>(30);
   const [secondsRemaining, setSecondsRemaining] = useState<number>(30 * 60);
 
-  // Helper to query counter from Agent or VPS
+  // Link / identity for this printer (Prioritize permanent MAC address over dynamic IP)
+  const currentPrinterObj = availablePrinters.find(
+    (p) => (printerRef && p.macId?.toLowerCase() === printerRef.toLowerCase()) ||
+           (printerRef && p.ip === printerRef) ||
+           (printerIp && p.ip === printerIp)
+  );
+  const activeMac = currentPrinterObj?.macId ||
+                    (printerRef.includes(':') || printerRef.includes('-') ? printerRef : '') ||
+                    searchParams.get('mac') || searchParams.get('mac_id') || '';
+
+  // Trigger 1s burst polling on Agent via VPS exec_utility command
+  const triggerBurstInterval = useCallback(async (mac: string, durationSec: number = 1800) => {
+    if (!mac) return;
+    try {
+      const apiHost = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
+      console.log(`[BurstInterval] Triggering 1s burst polling on Agent for MAC: ${mac} (${durationSec}s)`);
+      const res = await fetch(`${apiHost}/api/public/device/burst-interval`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mac_id: mac,
+          target_interval: 1,
+          timeout: durationSec
+        })
+      });
+      const data = await res.json();
+      console.log('[BurstInterval] Trigger response:', data);
+    } catch (e) {
+      console.warn('[BurstInterval] Failed to trigger burst interval:', e);
+    }
+  }, []);
+
+  // Restore Agent interval back to standard 60s
+  const restoreNormalInterval = useCallback(async (mac: string) => {
+    if (!mac) return;
+    try {
+      const apiHost = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
+      console.log(`[BurstInterval] Restoring normal 60s polling for MAC: ${mac}`);
+      await fetch(`${apiHost}/api/public/device/restore-interval`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mac_id: mac }),
+        keepalive: true
+      });
+    } catch (e) {
+      console.warn('[BurstInterval] Failed to restore normal interval:', e);
+    }
+  }, []);
+
+  // Helper to query counter from Agent or VPS (prioritizes live VPS /by-macs without LAN delay)
   const fetchCurrentCounter = useCallback(async (ip: string, mac?: string): Promise<CounterData> => {
     if (!ip && !mac) {
       return { total: 0, bw: 0, color: 0, timestamp: Date.now() };
     }
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 1400);
+    // 1. Query VPS /api/public/device/by-macs first if MAC is provided (instant ~50ms, bypasses mixed-content)
+    if (mac) {
+      try {
+        const apiHost = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
+        const res = await fetch(`${apiHost}/api/public/device/by-macs?macs=${encodeURIComponent(mac)}&_t=${Date.now()}`, {
+          cache: 'no-store'
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const dev = data.devices && (data.devices[mac] || Object.values(data.devices)[0]) as any;
+          if (dev && dev.counter && Object.keys(dev.counter).length > 0) {
+            const c = dev.counter;
+            const totalVal = Number(c.total || 0);
+            const copierVal = Number(c.copier_bw || 0);
+            const printerVal = Number(c.printer_bw || 0);
+            const bwVal = Number(copierVal + printerVal || totalVal);
+            const colorVal = Number(c.copier_full_color || c.printer_full_color || 0);
+            return { total: totalVal, bw: bwVal, color: colorVal, copierBw: copierVal, printerBw: printerVal, timestamp: Date.now() };
+          }
+        }
+      } catch {
+        // Fallback
+      }
+    }
 
-    // 1. Direct LAN Agent attempt (Port 9173 on local machine or LAN IP)
+    // 2. Direct LAN Agent attempt (Port 9173 on local machine or LAN IP)
     const agentHost = searchParams.get('agent_ip') || (window.location.hostname.match(/^\d+\.\d+\.\d+\.\d+$/) ? window.location.hostname : '127.0.0.1');
     if (ip) {
       try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 800);
         const localAgentUrl = `http://${agentHost}:9173/api/devices/action`;
         const res = await fetch(localAgentUrl, {
           method: 'POST',
@@ -136,29 +209,6 @@ export default function PayItPage() {
         }
       } catch {
         // Local agent query failed or blocked by mixed-content, fallback to VPS
-      }
-    }
-
-    // 2. Query VPS /api/public/device/by-macs if MAC is provided
-    if (mac) {
-      try {
-        const apiHost = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
-        const res = await fetch(`${apiHost}/api/public/device/by-macs?macs=${encodeURIComponent(mac)}`);
-        if (res.ok) {
-          const data = await res.json();
-          const dev = data.devices && (data.devices[mac] || Object.values(data.devices)[0]) as any;
-          if (dev && dev.counter && Object.keys(dev.counter).length > 0) {
-            const c = dev.counter;
-            const totalVal = Number(c.total || 0);
-            const copierVal = Number(c.copier_bw || 0);
-            const printerVal = Number(c.printer_bw || 0);
-            const bwVal = Number(copierVal + printerVal || totalVal);
-            const colorVal = Number(c.copier_full_color || c.printer_full_color || 0);
-            return { total: totalVal, bw: bwVal, color: colorVal, copierBw: copierVal, printerBw: printerVal, timestamp: Date.now() };
-          }
-        }
-      } catch {
-        // Fallback
       }
     }
 
@@ -325,14 +375,15 @@ export default function PayItPage() {
   useEffect(() => {
     let isMounted = true;
     async function loadCurrentCounterSnapshot() {
-      const activeMac = currentPrinterObj?.macId || (printerRef.includes(':') || printerRef.includes('-') ? printerRef : '');
       setIsLoadingCounter(true);
 
       // A. If MAC is present, query /api/public/device/by-macs
       if (activeMac) {
         try {
           const apiHost = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
-          const res = await fetch(`${apiHost}/api/public/device/by-macs?macs=${encodeURIComponent(activeMac)}`);
+          const res = await fetch(`${apiHost}/api/public/device/by-macs?macs=${encodeURIComponent(activeMac)}&_t=${Date.now()}`, {
+            cache: 'no-store'
+          });
           if (res.ok) {
             const data = await res.json();
             const dev = data.devices && (data.devices[activeMac] || Object.values(data.devices)[0]) as any;
@@ -385,7 +436,21 @@ export default function PayItPage() {
 
     loadCurrentCounterSnapshot();
     return () => { isMounted = false; };
-  }, [printerRef, printerIp, fetchCurrentCounter]);
+  }, [printerRef, printerIp, activeMac, fetchCurrentCounter]);
+
+  // 3. Periodic refresh of preview counter on IDLE (every 5s)
+  useEffect(() => {
+    if (status !== 'idle' || !activeMac) return;
+    const idlePoll = setInterval(async () => {
+      try {
+        const cnt = await fetchCurrentCounter(printerIp, activeMac);
+        if (cnt && cnt.total > 0) {
+          setPreviewCounter(cnt);
+        }
+      } catch {}
+    }, 5000);
+    return () => clearInterval(idlePoll);
+  }, [status, activeMac, printerIp, fetchCurrentCounter]);
 
   // Handle changing printer from dropdown
   const handleSelectPrinter = (selectedIp: string) => {
@@ -453,9 +518,29 @@ export default function PayItPage() {
     };
   }, [stopAllLoops]);
 
+  // Ensure normal interval is restored if user navigates away or closes tab
+  useEffect(() => {
+    const onBeforeUnload = () => {
+      if (status === 'running' && activeMac) {
+        const apiHost = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
+        navigator.sendBeacon?.(
+          `${apiHost}/api/public/device/restore-interval`,
+          new Blob([JSON.stringify({ mac_id: activeMac })], { type: 'application/json' })
+        );
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      if (status === 'running' && activeMac) {
+        restoreNormalInterval(activeMac);
+      }
+    };
+  }, [status, activeMac, restoreNormalInterval]);
+
   // Handle Session Start
   const handleStartSession = async () => {
-    if (!printerIp) {
+    if (!printerIp && !activeMac) {
       alert('Vui lòng chọn hoặc nhập IP của máy in trước khi bắt đầu!');
       return;
     }
@@ -464,16 +549,21 @@ export default function PayItPage() {
     setPollCount(0);
     setSecondsRemaining(maxMinutes * 60);
 
-    // Initial counter snapshot: use previewCounter if valid, or fetch live
-    let initialCounter = previewCounter;
-    if (!initialCounter || initialCounter.total === 0) {
-      initialCounter = await fetchCurrentCounter(printerIp, currentPrinterObj?.macId);
+    // Kích hoạt chế độ burst 1s ngay lập tức trên Agent qua exec_utility command
+    if (activeMac) {
+      triggerBurstInterval(activeMac, maxMinutes * 60);
+    }
+
+    // Initial counter snapshot: live query first to guarantee freshness
+    let initialCounter: CounterData = await fetchCurrentCounter(printerIp, activeMac);
+    if ((!initialCounter || initialCounter.total === 0) && previewCounter && previewCounter.total > 0) {
+      initialCounter = previewCounter;
     }
 
     const newSession: PayItSession = {
       sessionId: `PAY-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 899 + 100)}`,
-      printerRef: printerIp,
-      printerName: printerName || `Máy in ${printerIp}`,
+      printerRef: printerIp || activeMac,
+      printerName: printerName || `Máy in ${printerIp || activeMac}`,
       startTime: Date.now(),
       initialCounter: initialCounter || { total: 0, bw: 0, color: 0, timestamp: Date.now() },
       currentCounter: { ...(initialCounter || { total: 0, bw: 0, color: 0, timestamp: Date.now() }) },
@@ -505,7 +595,7 @@ export default function PayItPage() {
       }
 
       try {
-        const counter = await fetchCurrentCounter(printerIp, currentPrinterObj?.macId);
+        const counter = await fetchCurrentCounter(printerIp, activeMac);
         if (counter && counter.total > 0) {
           setSession((prev) => {
             if (!prev) return prev;
@@ -527,6 +617,9 @@ export default function PayItPage() {
       setSecondsRemaining((prev) => {
         if (prev <= 1) {
           stopAllLoops();
+          if (activeMac) {
+            restoreNormalInterval(activeMac);
+          }
           setStatus('timeout');
           return 0;
         }
@@ -538,6 +631,9 @@ export default function PayItPage() {
   // Handle Early Session Finish
   const handleFinishEarly = () => {
     stopAllLoops();
+    if (activeMac) {
+      restoreNormalInterval(activeMac);
+    }
     if (session) {
       setSession({
         ...session,
@@ -550,6 +646,9 @@ export default function PayItPage() {
   // Handle Reset / Start New Session
   const handleReset = () => {
     stopAllLoops();
+    if (activeMac) {
+      restoreNormalInterval(activeMac);
+    }
     setSession(null);
     setStatus('idle');
     setPollCount(0);
@@ -582,8 +681,6 @@ export default function PayItPage() {
   const vietQrUrl = `https://img.vietqr.io/image/${bankCode}-${bankAccount}-compact2.png?amount=${totalCost}&addInfo=${qrDescription}&accountName=${encodeURIComponent(bankOwner)}`;
 
   // Link for this printer to generate QR sticker (Prioritize permanent MAC address over dynamic IP)
-  const currentPrinterObj = availablePrinters.find((p) => (printerRef && p.macId === printerRef) || p.ip === printerIp);
-  const activeMac = currentPrinterObj?.macId || (printerRef.includes(':') || printerRef.includes('-') ? printerRef : '');
   const printerDirectUrl = activeMac
     ? `https://agentapi.quanlymay.com/pay?mac=${encodeURIComponent(activeMac)}`
     : `https://agentapi.quanlymay.com/pay?ip=${encodeURIComponent(printerIp)}`;
