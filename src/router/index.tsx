@@ -59,6 +59,8 @@ const DriversPage = React.lazy(() => import('../pages/DriversPage'));
 const AgentPage = React.lazy(() =>
   import('../pages/AgentPage').then((m) => ({ default: m.AgentPage }))
 );
+const PayItPage = React.lazy(() => import('../pages/PayIt/PayItPage'));
+
 
 
 // ---------- Loading fallback ----------
@@ -112,14 +114,20 @@ export function ProtectedRoute({ allowedRoles }: ProtectedRouteProps) {
 
 // ---------- App Router ----------
 export function AppRouter() {
-  const isTunnelSubdomain = window.location.hostname.endsWith('.app.goxprint.com') && window.location.hostname !== 'app.goxprint.com';
+  const hostname = window.location.hostname.toLowerCase();
+  const isTunnelSubdomain = hostname.endsWith('.app.goxprint.com') && hostname !== 'app.goxprint.com';
+  const isPayDomain = hostname.includes('pay') || hostname === 'pay.quanlymay.com' || hostname === 'payit.goxprint.com';
 
   return (
     <BrowserRouter>
       <Suspense fallback={<PageLoading />}>
         <Routes>
-          {/* Public route – no AppLayout */}
+          {/* Public routes – no AppLayout */}
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/pay" element={<PayItPage />} />
+          <Route path="/pay/:printerRef" element={<PayItPage />} />
+          <Route path="/payit" element={<PayItPage />} />
+          <Route path="/payit/:printerRef" element={<PayItPage />} />
 
           {/* Protected routes – wrapped in AppLayout */}
           <Route element={<ProtectedRoute />}>
@@ -148,8 +156,19 @@ export function AppRouter() {
             </Route>
           </Route>
 
-          {/* Default redirect */}
-          <Route path="/" element={isTunnelSubdomain ? <NotFoundPage /> : <Navigate to="/dashboard" replace />} />
+          {/* Default redirect: if accessed via pay domain, load PayIt directly */}
+          <Route
+            path="/"
+            element={
+              isPayDomain ? (
+                <PayItPage />
+              ) : isTunnelSubdomain ? (
+                <NotFoundPage />
+              ) : (
+                <Navigate to="/dashboard" replace />
+              )
+            }
+          />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </Suspense>
