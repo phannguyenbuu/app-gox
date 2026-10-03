@@ -164,7 +164,14 @@ export default function PayItPage() {
         });
         if (res.ok) {
           const data = await res.json();
-          const dev = data.devices && (data.devices[mac] || Object.values(data.devices)[0]) as any;
+          const normKey = mac.toUpperCase();
+          const dev = data.devices && (
+            data.devices[mac] ||
+            data.devices[normKey] ||
+            data.devices[mac.toLowerCase()] ||
+            Object.entries(data.devices).find(([k]) => k.toUpperCase() === normKey)?.[1] ||
+            Object.values(data.devices)[0]
+          ) as any;
           if (dev && dev.counter && Object.keys(dev.counter).length > 0) {
             const c = dev.counter;
             const totalVal = Number(c.total || 0);
@@ -208,38 +215,7 @@ export default function PayItPage() {
           }
         }
       } catch {
-        // Local agent query failed or blocked by mixed-content, fallback to VPS
-      }
-    }
-
-    // 3. Fallback to Cloud VPS API action
-    if (ip) {
-      try {
-        const apiHost = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
-        const vpsRes = await fetch(`${apiHost}/api/devices/action`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-API-Token': 'change-me',
-            'X-API-Key': 'change-me'
-          },
-          body: JSON.stringify({ ip, action: 'counter' })
-        });
-        if (vpsRes.ok) {
-          const vpsData = await vpsRes.json();
-          if (vpsData.ok && vpsData.payload) {
-            const p = vpsData.payload;
-            const cd = p.counter_data || {};
-            const totalVal = Number(cd.total || p.total || p.counter || 0);
-            const copierVal = Number(cd.copier_bw || 0);
-            const printerVal = Number(cd.printer_bw || 0);
-            const bwVal = Number(copierVal + printerVal || cd.bw || p.bw || totalVal);
-            const colorVal = Number(cd.copier_full_color || cd.printer_full_color || cd.color || p.color || 0);
-            return { total: totalVal, bw: bwVal, color: colorVal, copierBw: copierVal, printerBw: printerVal, timestamp: Date.now() };
-          }
-        }
-      } catch {
-        // Fallback
+        // Local agent query failed or offline
       }
     }
 
@@ -438,9 +414,14 @@ export default function PayItPage() {
     return () => { isMounted = false; };
   }, [printerRef, printerIp, activeMac, fetchCurrentCounter]);
 
-  // 3. Periodic refresh of preview counter on IDLE (every 5s)
+  // 3. Periodic refresh of preview counter on IDLE (every 1s) & trigger Agent burst on page load
   useEffect(() => {
-    if (status !== 'idle' || !activeMac) return;
+    if (!activeMac) return;
+
+    // Kích hoạt ngay chế độ burst 1s trên Agent để máy in sẵn sàng đọc nhanh
+    triggerBurstInterval(activeMac, 1800);
+
+    if (status !== 'idle') return;
     const idlePoll = setInterval(async () => {
       try {
         const cnt = await fetchCurrentCounter(printerIp, activeMac);
@@ -448,9 +429,9 @@ export default function PayItPage() {
           setPreviewCounter(cnt);
         }
       } catch {}
-    }, 5000);
+    }, 1000);
     return () => clearInterval(idlePoll);
-  }, [status, activeMac, printerIp, fetchCurrentCounter]);
+  }, [status, activeMac, printerIp, fetchCurrentCounter, triggerBurstInterval]);
 
   // Handle changing printer from dropdown
   const handleSelectPrinter = (selectedIp: string) => {
