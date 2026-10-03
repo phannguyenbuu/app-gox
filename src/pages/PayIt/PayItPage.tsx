@@ -21,6 +21,16 @@ interface PayItSession {
   priceColor: number;
 }
 
+export interface PrinterItem {
+  id: string;
+  name: string;
+  ip: string;
+  macId?: string;
+  brand?: string;
+  model?: string;
+  isOnline?: boolean;
+}
+
 export default function PayItPage() {
   const { theme, toggleTheme } = useTheme();
   const isLight = theme === 'light';
@@ -51,10 +61,20 @@ export default function PayItPage() {
   const [searchParams] = useSearchParams();
 
   // Target printer parameters
-  const initialPrinterRef = routePrinterRef || searchParams.get('mac') || searchParams.get('ip') || '';
-  const [printerRef] = useState<string>(initialPrinterRef);
-  const [printerIp, setPrinterIp] = useState<string>(searchParams.get('ip') || (initialPrinterRef.includes('.') ? initialPrinterRef : '192.168.1.100'));
-  const [printerName, setPrinterName] = useState<string>(searchParams.get('name') || 'Máy Photocopy');
+  const initialRef = routePrinterRef || searchParams.get('mac') || searchParams.get('ip') || '';
+  const initialIp = searchParams.get('ip') || (initialRef.includes('.') ? initialRef : '');
+  
+  const [printerRef, setPrinterRef] = useState<string>(initialRef);
+  const [printerIp, setPrinterIp] = useState<string>(initialIp);
+  const [printerName, setPrinterName] = useState<string>(searchParams.get('name') || '');
+
+  // Printer discovery state
+  const [availablePrinters, setAvailablePrinters] = useState<PrinterItem[]>([]);
+  const [isLoadingPrinters, setIsLoadingPrinters] = useState<boolean>(true);
+  const [isCustomMode, setIsCustomMode] = useState<boolean>(false);
+  const [customIpInput, setCustomIpInput] = useState<string>('');
+  const [showQrModal, setShowQrModal] = useState<boolean>(false);
+  const [copyFeedback, setCopyFeedback] = useState<string>('');
 
   // Pricing configuration (VNĐ)
   const [priceBw, setPriceBw] = useState<number>(500);
@@ -74,10 +94,165 @@ export default function PayItPage() {
   const [maxMinutes, setMaxMinutes] = useState<number>(30);
   const [secondsRemaining, setSecondsRemaining] = useState<number>(30 * 60);
 
-  // Load configuration from agentapi.quanlymay.com
+  // 1. Fetch available printers from LAN sites (VPS API) and Local Agent
+  useEffect(() => {
+    let isMounted = true;
+    async function fetchPrinters() {
+      setIsLoadingPrinters(true);
+      const list: PrinterItem[] = [];
+      const seen = new Set<string>();
+
+      // A. Query VPS /api/lan-sites
+      try {
+        const apiHost = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
+        const res = await fetch(`${apiHost}/api/lan-sites?lead=default`, {
+          headers: {
+            'X-API-Token': 'change-me',
+            'X-API-Key': 'change-me',
+            'Cache-Control': 'no-cache'
+          }
+        });
+        if (res.ok) {
+          const json = await res.json();
+          (json.rows || []).forEach((row: any) => {
+            (row.printers || []).forEach((p: any) => {
+              const ip = String(p.ip || '').trim();
+              if (ip && !seen.has(ip)) {
+                seen.add(ip);
+                list.push({
+                  id: String(p.id || ip),
+                  name: p.printer_name || p.name || `Máy Photocopy (${ip})`,
+                  ip,
+                  macId: p.mac_id || '',
+                  brand: p.printer_type || '',
+                  isOnline: Boolean(p.is_online)
+                });
+              }
+            });
+          });
+        }
+      } catch (e) {
+        console.warn('Could not load printers from VPS:', e);
+      }
+
+      // B. Query local GoxAgent if available
+      try {
+        const agentHost = searchParams.get('agent_ip') || (window.location.hostname.match(/^\d+\.\d+\.\d+\.\d+$/) ? window.location.hostname : '127.0.0.1');
+        const localRes = await fetch(`http://${agentHost}:9173/api/devices`, { signal: AbortSignal.timeout(1500) });
+        if (localRes.ok) {
+          const data = await localRes.json();
+          (data.devices || []).forEach((d: any) => {
+            const ip = String(d.ip || '').trim();
+            if (ip && !seen.has(ip)) {
+              seen.add(ip);
+              list.push({
+                id: String(d.id || ip),
+                name: d.name || d.model_name || `Máy in (${ip})`,
+                ip,
+                macId: d.mac || '',
+                brand: d.vendor || '',
+                isOnline: true
+              });
+            }
+          });
+        }
+      } catch {
+        // Local agent query timeout or unavailable
+      }
+
+      if (!isMounted) return;
+
+      setAvailablePrinters(list);
+      setIsLoadingPrinters(false);
+
+      // Auto-resolution logic:
+      const targetQueryIp = searchParams.get('ip') || (initialRef.includes('.') ? initialRef : '');
+      const targetQueryMac = searchParams.get('mac') || '';
+
+      if (targetQueryIp) {
+        const found = list.find((p) => p.ip === targetQueryIp);
+        setPrinterIp(targetQueryIp);
+        setPrinterRef(targetQueryIp);
+        if (found) {
+          setPrinterName(found.name);
+        } else {
+          setPrinterName(searchParams.get('name') || `Máy in ${targetQueryIp}`);
+          setIsCustomMode(true);
+          setCustomIpInput(targetQueryIp);
+        }
+      } else if (targetQueryMac) {
+        const found = list.find((p) => p.macId?.toLowerCase() === targetQueryMac.toLowerCase());
+        if (found) {
+          setPrinterIp(found.ip);
+          setPrinterRef(found.ip);
+          setPrinterName(found.name);
+        }
+      } else {
+        // Check localStorage
+        const savedIp = localStorage.getItem('payit_selected_printer_ip');
+        const savedMatch = list.find((p) => p.ip === savedIp);
+        if (savedMatch) {
+          setPrinterIp(savedMatch.ip);
+          setPrinterRef(savedMatch.ip);
+          setPrinterName(savedMatch.name);
+        } else if (list.length > 0) {
+          // Default to the first discovered printer
+          setPrinterIp(list[0].ip);
+          setPrinterRef(list[0].ip);
+          setPrinterName(list[0].name);
+        } else {
+          // If no printers discovered at all, set empty and allow custom input
+          setPrinterName('Chưa chọn máy in');
+          setIsCustomMode(true);
+        }
+      }
+    }
+
+    fetchPrinters();
+    return () => { isMounted = false; };
+  }, []);
+
+  // Handle changing printer from dropdown
+  const handleSelectPrinter = (selectedIp: string) => {
+    if (selectedIp === '__custom__') {
+      setIsCustomMode(true);
+      setCustomIpInput(printerIp);
+      return;
+    }
+    setIsCustomMode(false);
+    const found = availablePrinters.find((p) => p.ip === selectedIp);
+    if (found) {
+      setPrinterIp(found.ip);
+      setPrinterRef(found.ip);
+      setPrinterName(found.name);
+      localStorage.setItem('payit_selected_printer_ip', found.ip);
+
+      // Update URL search param seamlessly without reload
+      const newUrl = new URL(window.location.href);
+      newUrl.searchParams.set('ip', found.ip);
+      window.history.replaceState({}, '', newUrl.toString());
+    }
+  };
+
+  // Handle applying a custom IP
+  const handleApplyCustomIp = () => {
+    const cleanIp = customIpInput.trim();
+    if (!cleanIp) return;
+    setPrinterIp(cleanIp);
+    setPrinterRef(cleanIp);
+    setPrinterName(`Máy in ${cleanIp}`);
+    localStorage.setItem('payit_selected_printer_ip', cleanIp);
+
+    const newUrl = new URL(window.location.href);
+    newUrl.searchParams.set('ip', cleanIp);
+    window.history.replaceState({}, '', newUrl.toString());
+  };
+
+  // 2. Load configuration from agentapi.quanlymay.com
   useEffect(() => {
     let isMounted = true;
     async function loadConfigFromApi() {
+      if (!printerIp && !printerRef) return;
       try {
         const apiHost = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
         const query = new URLSearchParams();
@@ -97,7 +272,7 @@ export default function PayItPage() {
             if (data.bank_account) setBankAccount(String(data.bank_account));
             if (data.bank_code) setBankCode(String(data.bank_code));
             if (data.bank_owner) setBankOwner(String(data.bank_owner));
-            if (data.printer_name) setPrinterName(String(data.printer_name));
+            if (data.printer_name && !printerName) setPrinterName(String(data.printer_name));
           }
         }
       } catch {
@@ -143,6 +318,10 @@ export default function PayItPage() {
       });
     }
 
+    if (!ip) {
+      return { total: 0, bw: 0, color: 0, timestamp: Date.now() };
+    }
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 1200);
 
@@ -151,7 +330,7 @@ export default function PayItPage() {
     if (tunnelUrl) {
       try {
         const cleanTunnel = tunnelUrl.replace(/\/$/, '');
-        const res = await fetch(`${cleanTunnel}/api/action`, {
+        const res = await fetch(`${cleanTunnel}/api/devices/action`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ip, action: 'counter' }),
@@ -162,12 +341,11 @@ export default function PayItPage() {
           const data = await res.json();
           if (data.ok && data.payload) {
             const p = data.payload;
-            return {
-              total: Number(p.total || p.total_counter || p.counter || 0),
-              bw: Number(p.bw || p.black_white || p.bw_counter || p.total || 0),
-              color: Number(p.color || p.color_counter || 0),
-              timestamp: Date.now()
-            };
+            const cd = p.counter_data || {};
+            const totalVal = Number(cd.total || p.total || p.counter || 0);
+            const bwVal = Number(cd.copier_bw || cd.printer_bw || cd.bw || p.bw || totalVal);
+            const colorVal = Number(cd.copier_full_color || cd.printer_full_color || cd.color || p.color || 0);
+            return { total: totalVal, bw: bwVal, color: colorVal, timestamp: Date.now() };
           }
         }
       } catch {
@@ -178,7 +356,7 @@ export default function PayItPage() {
     // 2. Direct LAN Agent attempt (Port 9173 on local machine or LAN IP)
     const agentHost = searchParams.get('agent_ip') || (window.location.hostname.match(/^\d+\.\d+\.\d+\.\d+$/) ? window.location.hostname : '127.0.0.1');
     try {
-      const localAgentUrl = `http://${agentHost}:9173/api/action`;
+      const localAgentUrl = `http://${agentHost}:9173/api/devices/action`;
       const res = await fetch(localAgentUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -190,12 +368,11 @@ export default function PayItPage() {
         const data = await res.json();
         if (data.ok && data.payload) {
           const p = data.payload;
-          return {
-            total: Number(p.total || p.total_counter || p.counter || 0),
-            bw: Number(p.bw || p.black_white || p.bw_counter || p.total || 0),
-            color: Number(p.color || p.color_counter || 0),
-            timestamp: Date.now()
-          };
+          const cd = p.counter_data || {};
+          const totalVal = Number(cd.total || p.total || p.counter || 0);
+          const bwVal = Number(cd.copier_bw || cd.printer_bw || cd.bw || p.bw || totalVal);
+          const colorVal = Number(cd.copier_full_color || cd.printer_full_color || cd.color || p.color || 0);
+          return { total: totalVal, bw: bwVal, color: colorVal, timestamp: Date.now() };
         }
       }
     } catch {
@@ -207,19 +384,22 @@ export default function PayItPage() {
       const apiHost = import.meta.env.VITE_API_URL || 'https://agentapi.quanlymay.com';
       const vpsRes = await fetch(`${apiHost}/api/devices/action`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Token': 'change-me',
+          'X-API-Key': 'change-me'
+        },
         body: JSON.stringify({ ip, action: 'counter' })
       });
       if (vpsRes.ok) {
         const vpsData = await vpsRes.json();
         if (vpsData.ok && vpsData.payload) {
           const p = vpsData.payload;
-          return {
-            total: Number(p.total || p.counter || 0),
-            bw: Number(p.bw || p.total || 0),
-            color: Number(p.color || 0),
-            timestamp: Date.now()
-          };
+          const cd = p.counter_data || {};
+          const totalVal = Number(cd.total || p.total || p.counter || 0);
+          const bwVal = Number(cd.copier_bw || cd.printer_bw || cd.bw || p.bw || totalVal);
+          const colorVal = Number(cd.copier_full_color || cd.printer_full_color || cd.color || p.color || 0);
+          return { total: totalVal, bw: bwVal, color: colorVal, timestamp: Date.now() };
         }
       }
     } catch (e: any) {
@@ -251,26 +431,27 @@ export default function PayItPage() {
     };
   }, [stopAllLoops]);
 
+  // Handle Session Start
   const handleStartSession = async () => {
-    stopAllLoops();
-    setLastPollError('');
-    setSecondsRemaining(maxMinutes * 60);
-    setPollCount(0);
-
-    let initCounter: CounterData = { total: 0, bw: 0, color: 0, timestamp: Date.now() };
-    try {
-      initCounter = await fetchCurrentCounter(printerIp);
-    } catch {
-      initCounter = { total: 12500, bw: 10000, color: 2500, timestamp: Date.now() };
+    if (!printerIp) {
+      alert('Vui lòng chọn hoặc nhập IP của máy in trước khi bắt đầu!');
+      return;
     }
 
+    setLastPollError('');
+    setPollCount(0);
+    setSecondsRemaining(maxMinutes * 60);
+
+    // Initial counter snapshot
+    const initialCounter = await fetchCurrentCounter(printerIp);
+
     const newSession: PayItSession = {
-      sessionId: `PAY-${Date.now().toString().slice(-6)}`,
-      printerRef: printerRef || printerIp,
-      printerName: printerName || 'Máy in tự phục vụ',
+      sessionId: `PAY-${Date.now().toString(36).toUpperCase()}-${Math.floor(Math.random() * 899 + 100)}`,
+      printerRef: printerIp,
+      printerName: printerName || `Máy in ${printerIp}`,
       startTime: Date.now(),
-      initialCounter: initCounter,
-      currentCounter: { ...initCounter },
+      initialCounter,
+      currentCounter: { ...initialCounter },
       priceBw,
       priceColor
     };
@@ -278,6 +459,25 @@ export default function PayItPage() {
     setSession(newSession);
     setStatus('running');
 
+    // 1. Repeat 1s polling loop
+    intervalRef.current = setInterval(async () => {
+      try {
+        const counter = await fetchCurrentCounter(printerIp);
+        setSession((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            currentCounter: counter
+          };
+        });
+        setPollCount((c) => c + 1);
+        setLastPollError('');
+      } catch (err: any) {
+        setLastPollError(err?.message || 'Lỗi đọc số đếm');
+      }
+    }, 1000);
+
+    // 2. Countdown timer loop
     timerRef.current = setInterval(() => {
       setSecondsRemaining((prev) => {
         if (prev <= 1) {
@@ -288,69 +488,70 @@ export default function PayItPage() {
         return prev - 1;
       });
     }, 1000);
-
-    intervalRef.current = setInterval(async () => {
-      try {
-        setPollCount((c) => c + 1);
-        const latest = await fetchCurrentCounter(printerIp);
-        setSession((prev) => {
-          if (!prev) return null;
-          const newBw = Math.max(prev.initialCounter.bw, latest.bw || prev.currentCounter.bw);
-          const newColor = Math.max(prev.initialCounter.color, latest.color || prev.currentCounter.color);
-          const newTotal = Math.max(prev.initialCounter.total, latest.total || (newBw + newColor));
-          return {
-            ...prev,
-            currentCounter: {
-              total: newTotal,
-              bw: newBw,
-              color: newColor,
-              timestamp: Date.now()
-            }
-          };
-        });
-      } catch (err: any) {
-        setLastPollError(err?.message || 'Lỗi nhịp đọc 1s');
-      }
-    }, 1000);
   };
 
+  // Handle Early Session Finish
   const handleFinishEarly = () => {
     stopAllLoops();
-    setStatus('completed');
     if (session) {
       setSession({
         ...session,
         endTime: Date.now()
       });
     }
+    setStatus('completed');
   };
 
+  // Handle Reset / Start New Session
   const handleReset = () => {
     stopAllLoops();
-    setStatus('idle');
     setSession(null);
+    setStatus('idle');
+    setPollCount(0);
     setSecondsRemaining(maxMinutes * 60);
+    setLastPollError('');
   };
 
-  const printedBw = session ? Math.max(0, session.currentCounter.bw - session.initialCounter.bw) : 0;
-  const printedColor = session ? Math.max(0, session.currentCounter.color - session.initialCounter.color) : 0;
-  const printedTotal = session ? Math.max(0, session.currentCounter.total - session.initialCounter.total) : (printedBw + printedColor);
+  // Calculation of printed pages
+  const printedTotal = session
+    ? Math.max(0, session.currentCounter.total - session.initialCounter.total)
+    : 0;
+  const printedBw = session
+    ? Math.max(0, session.currentCounter.bw - session.initialCounter.bw)
+    : 0;
+  const printedColor = session
+    ? Math.max(0, session.currentCounter.color - session.initialCounter.color)
+    : 0;
+
   const totalCost = (printedBw * priceBw) + (printedColor * priceColor);
 
-  const formatTime = (secs: number) => {
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  // Time remaining format (MM:SS)
+  const formatTime = (totalSeconds: number) => {
+    const mins = Math.floor(totalSeconds / 60);
+    const secs = totalSeconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const vietQrUrl = `https://img.vietqr.io/image/${bankCode}-${bankAccount}-compact2.png?amount=${totalCost}&addInfo=${encodeURIComponent(session?.sessionId || 'PAYIT')}&accountName=${encodeURIComponent(bankOwner)}`;
+  // VietQR URL generation
+  const qrDescription = encodeURIComponent(session?.sessionId || 'GOXPRINT-PAYIT');
+  const vietQrUrl = `https://img.vietqr.io/image/${bankCode}-${bankAccount}-compact2.png?amount=${totalCost}&addInfo=${qrDescription}&accountName=${encodeURIComponent(bankOwner)}`;
+
+  // Link for this printer to generate QR sticker
+  const printerDirectUrl = `https://agentapi.quanlymay.com/pay?ip=${encodeURIComponent(printerIp)}`;
+  const printerStickerQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(printerDirectUrl)}`;
+
+  const handleCopyLink = () => {
+    navigator.clipboard.writeText(printerDirectUrl);
+    setCopyFeedback('Đã sao chép link!');
+    setTimeout(() => setCopyFeedback(''), 2500);
+  };
 
   return (
     <div style={{
       minHeight: '100vh',
       backgroundColor: t.bg,
       color: t.text,
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
@@ -358,41 +559,29 @@ export default function PayItPage() {
       boxSizing: 'border-box',
       transition: 'background-color 0.3s, color 0.3s'
     }}>
-      {/* Top Header */}
+      {/* Header bar */}
       <header style={{
         width: '100%',
         maxWidth: '540px',
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-        padding: '12px 0 20px 0',
+        padding: '12px 0',
         borderBottom: `1px solid ${t.headerBorder}`
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div style={{
-            width: '38px',
-            height: '38px',
-            borderRadius: '10px',
-            background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: '1.25rem',
-            boxShadow: '0 4px 12px rgba(16, 185, 129, 0.3)'
-          }}>
-            🖨️
-          </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: '1.6rem' }}>⚡</span>
           <div>
-            <h1 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 800, letterSpacing: '-0.5px', color: t.text }}>
+            <h1 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 800, letterSpacing: '-0.5px' }}>
               Pay<span style={{ color: '#10b981' }}>It</span>
             </h1>
-            <p style={{ margin: 0, fontSize: '0.72rem', color: t.textMuted }}>
-              agentapi.quanlymay.com/pay • In ấn tự phục vụ
-            </p>
+            <div style={{ fontSize: '0.72rem', color: t.textMuted }}>
+              Tự phục vụ photocopy & in ấn
+            </div>
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '8px' }}>
           {/* Theme Toggle Button */}
           <button
             onClick={toggleTheme}
@@ -449,28 +638,9 @@ export default function PayItPage() {
           boxShadow: t.cardShadow
         }}>
           <h4 style={{ margin: '0 0 10px 0', fontSize: '0.9rem', color: isLight ? '#0284c7' : '#38bdf8' }}>
-            ⚙️ Cấu hình thông số
+            ⚙️ Cấu hình thông số thanh toán & giá
           </h4>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-            <div>
-              <label style={{ fontSize: '0.72rem', color: t.textMuted, display: 'block' }}>IP Máy in:</label>
-              <input
-                type="text"
-                value={printerIp}
-                onChange={(e) => setPrinterIp(e.target.value)}
-                disabled={status === 'running'}
-                style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', background: t.inputBg, border: `1px solid ${t.inputBorder}`, color: t.inputText, fontSize: '0.8rem' }}
-              />
-            </div>
-            <div>
-              <label style={{ fontSize: '0.72rem', color: t.textMuted, display: 'block' }}>Tên hiển thị:</label>
-              <input
-                type="text"
-                value={printerName}
-                onChange={(e) => setPrinterName(e.target.value)}
-                style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', background: t.inputBg, border: `1px solid ${t.inputBorder}`, color: t.inputText, fontSize: '0.8rem' }}
-              />
-            </div>
             <div>
               <label style={{ fontSize: '0.72rem', color: t.textMuted, display: 'block' }}>Giá Đen Trắng (đ/trang):</label>
               <input
@@ -522,11 +692,10 @@ export default function PayItPage() {
                 type="number"
                 value={maxMinutes}
                 onChange={(e) => {
-                  const val = Math.max(1, Number(e.target.value) || 1);
-                  setMaxMinutes(val);
-                  if (status === 'idle') setSecondsRemaining(val * 60);
+                  const m = Number(e.target.value);
+                  setMaxMinutes(m);
+                  if (status === 'idle') setSecondsRemaining(m * 60);
                 }}
-                disabled={status === 'running'}
                 style={{ width: '100%', padding: '6px 8px', borderRadius: '6px', background: t.inputBg, border: `1px solid ${t.inputBorder}`, color: t.inputText, fontSize: '0.8rem' }}
               />
             </div>
@@ -545,6 +714,102 @@ export default function PayItPage() {
         </div>
       )}
 
+      {/* QR Code Sticker Modal */}
+      {showQrModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0, 0, 0, 0.65)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 9999,
+          padding: '16px'
+        }}>
+          <div style={{
+            background: t.cardBg,
+            border: `1px solid ${t.cardBorder}`,
+            borderRadius: '18px',
+            padding: '24px',
+            maxWidth: '380px',
+            width: '100%',
+            textAlign: 'center',
+            boxShadow: '0 20px 30px rgba(0,0,0,0.3)'
+          }}>
+            <h3 style={{ margin: '0 0 6px 0', fontSize: '1.15rem', color: t.text }}>
+              📱 Mã QR dán lên máy in
+            </h3>
+            <p style={{ margin: '0 0 16px 0', fontSize: '0.8rem', color: t.textMuted }}>
+              Dán mã này lên <b>{printerName}</b> ({printerIp}) để khách quét là vào thẳng phiên in của máy này.
+            </p>
+
+            <div style={{
+              background: '#ffffff',
+              padding: '12px',
+              borderRadius: '12px',
+              display: 'inline-block',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.08)'
+            }}>
+              <img
+                src={printerStickerQrUrl}
+                alt="Printer QR"
+                style={{ width: '200px', height: '200px', display: 'block' }}
+              />
+            </div>
+
+            <div style={{
+              marginTop: '14px',
+              padding: '8px',
+              borderRadius: '8px',
+              background: t.innerCard,
+              border: `1px solid ${t.innerBorder}`,
+              fontSize: '0.75rem',
+              color: isLight ? '#0284c7' : '#38bdf8',
+              wordBreak: 'break-all'
+            }}>
+              {printerDirectUrl}
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
+              <button
+                onClick={handleCopyLink}
+                style={{
+                  flex: 1,
+                  padding: '10px',
+                  borderRadius: '10px',
+                  border: 'none',
+                  background: '#10b981',
+                  color: '#fff',
+                  fontSize: '0.85rem',
+                  fontWeight: 700,
+                  cursor: 'pointer'
+                }}
+              >
+                {copyFeedback || '📋 Sao chép Link'}
+              </button>
+              <button
+                onClick={() => setShowQrModal(false)}
+                style={{
+                  padding: '10px 16px',
+                  borderRadius: '10px',
+                  border: `1px solid ${t.buttonSecondaryBorder}`,
+                  background: t.buttonSecondaryBg,
+                  color: t.buttonSecondaryText,
+                  fontSize: '0.85rem',
+                  fontWeight: 600,
+                  cursor: 'pointer'
+                }}
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main Container */}
       <main style={{ width: '100%', maxWidth: '540px', marginTop: '16px' }}>
 
@@ -558,6 +823,109 @@ export default function PayItPage() {
             textAlign: 'center',
             boxShadow: t.cardShadow
           }}>
+            {/* PRINTER SELECTOR CARD */}
+            <div style={{
+              background: t.innerCard,
+              border: `1px solid ${t.innerBorder}`,
+              borderRadius: '14px',
+              padding: '14px 16px',
+              marginBottom: '20px',
+              textAlign: 'left'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <label style={{ fontSize: '0.8rem', fontWeight: 700, color: t.textMuted, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <span>🖨️</span> Chọn máy in / photocopy:
+                </label>
+                {printerIp && (
+                  <button
+                    onClick={() => setShowQrModal(true)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: isLight ? '#0284c7' : '#38bdf8',
+                      fontSize: '0.76rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      padding: 0
+                    }}
+                    title="Xem link & mã QR để in dán lên máy in này"
+                  >
+                    📱 QR dán máy
+                  </button>
+                )}
+              </div>
+
+              {isLoadingPrinters ? (
+                <div style={{ fontSize: '0.82rem', color: t.textMuted, fontStyle: 'italic', padding: '6px 0' }}>
+                  ⏳ Đang tìm kiếm các máy in trên hệ thống...
+                </div>
+              ) : (
+                <select
+                  value={isCustomMode ? '__custom__' : printerIp}
+                  onChange={(e) => handleSelectPrinter(e.target.value)}
+                  style={{
+                    width: '100%',
+                    padding: '10px 12px',
+                    borderRadius: '10px',
+                    background: t.inputBg,
+                    border: `1.5px solid ${isLight ? '#cbd5e1' : '#334155'}`,
+                    color: t.inputText,
+                    fontSize: '0.92rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    outline: 'none'
+                  }}
+                >
+                  {availablePrinters.map((p) => (
+                    <option key={p.ip} value={p.ip}>
+                      {p.name} — {p.ip} {p.isOnline ? '🟢' : ''}
+                    </option>
+                  ))}
+                  <option value="__custom__">✏️ Nhập địa chỉ IP máy in khác...</option>
+                </select>
+              )}
+
+              {/* Custom IP input box */}
+              {isCustomMode && (
+                <div style={{ marginTop: '10px', display: 'flex', gap: '8px' }}>
+                  <input
+                    type="text"
+                    placeholder="Nhập IP máy in (vd: 192.168.1.226)"
+                    value={customIpInput}
+                    onChange={(e) => setCustomIpInput(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleApplyCustomIp()}
+                    style={{
+                      flex: 1,
+                      padding: '8px 12px',
+                      borderRadius: '8px',
+                      background: t.inputBg,
+                      border: `1px solid ${t.inputBorder}`,
+                      color: t.inputText,
+                      fontSize: '0.85rem'
+                    }}
+                  />
+                  <button
+                    onClick={handleApplyCustomIp}
+                    style={{
+                      padding: '8px 14px',
+                      borderRadius: '8px',
+                      border: 'none',
+                      background: '#10b981',
+                      color: '#fff',
+                      fontSize: '0.82rem',
+                      fontWeight: 700,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Áp dụng
+                  </button>
+                </div>
+              )}
+            </div>
+
             <div style={{
               display: 'inline-block',
               padding: '6px 16px',
@@ -572,11 +940,11 @@ export default function PayItPage() {
               🟢 Sẵn sàng mở phiên in
             </div>
 
-            <h2 style={{ margin: '0 0 8px 0', fontSize: '1.4rem', fontWeight: 800, color: t.text }}>
-              {printerName}
+            <h2 style={{ margin: '0 0 6px 0', fontSize: '1.4rem', fontWeight: 800, color: t.text }}>
+              {printerName || 'Máy Photocopy'}
             </h2>
             <p style={{ margin: '0 0 20px 0', fontSize: '0.85rem', color: t.textMuted }}>
-              Địa chỉ kết nối: <code style={{ color: isLight ? '#0284c7' : '#38bdf8', fontWeight: 600 }}>{printerIp}</code>
+              IP máy: <code style={{ color: isLight ? '#0284c7' : '#38bdf8', fontWeight: 700, fontSize: '0.95rem' }}>{printerIp || 'Chưa thiết lập'}</code>
             </p>
 
             {/* Price tags */}
@@ -614,18 +982,19 @@ export default function PayItPage() {
             {/* Start Button */}
             <button
               onClick={handleStartSession}
+              disabled={!printerIp}
               style={{
                 width: '100%',
                 padding: '16px',
                 borderRadius: '14px',
                 border: 'none',
-                background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+                background: printerIp ? 'linear-gradient(135deg, #10b981 0%, #059669 100%)' : '#94a3b8',
                 color: '#fff',
                 fontSize: '1.15rem',
                 fontWeight: 800,
                 letterSpacing: '0.5px',
-                cursor: 'pointer',
-                boxShadow: '0 8px 20px rgba(16, 185, 129, 0.35)',
+                cursor: printerIp ? 'pointer' : 'not-allowed',
+                boxShadow: printerIp ? '0 8px 20px rgba(16, 185, 129, 0.35)' : 'none',
                 transition: 'all 0.2s'
               }}
             >
@@ -633,8 +1002,8 @@ export default function PayItPage() {
             </button>
 
             <p style={{ marginTop: '12px', fontSize: '0.78rem', color: t.textMuted, lineHeight: 1.5 }}>
-              ⏱️ Thời lượng tối đa <b>{maxMinutes} phút</b> (tự động kết thúc nếu quá giờ).<br />
-              Hệ thống cập nhật số trang mỗi 1 giây. Bạn có thể bấm kết thúc sớm bất kỳ lúc nào.
+              ⏱️ Phiên in tự động kết thúc sau tối đa <b>{maxMinutes} phút</b> (có thể hoàn tất sớm bất kỳ lúc nào).<br />
+              Hệ thống cập nhật số trang mỗi 1 giây.
             </p>
           </div>
         )}
@@ -648,97 +1017,112 @@ export default function PayItPage() {
             padding: '24px 20px',
             boxShadow: t.cardShadow
           }}>
-            {/* Live Indicator Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            {/* Live Status Bar */}
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              paddingBottom: '16px',
+              borderBottom: `1px solid ${t.innerBorder}`
+            }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span style={{
-                  display: 'inline-block',
                   width: '10px',
                   height: '10px',
                   borderRadius: '50%',
-                  background: '#10b981',
-                  boxShadow: '0 0 10px #10b981'
-                }} />
+                  backgroundColor: '#10b981',
+                  boxShadow: '0 0 10px #10b981',
+                  display: 'inline-block'
+                }}></span>
                 <span style={{ fontSize: '0.85rem', fontWeight: 700, color: isLight ? '#059669' : '#34d399' }}>
-                  Đang đếm realtime (1s) • Nhịp #{pollCount}
+                  ĐANG THEO DÕI (1s/lần)
                 </span>
+                <span style={{ fontSize: '0.72rem', color: t.textMuted }}>#{pollCount}</span>
               </div>
 
-              {/* Timer Badge */}
+              {/* Countdown badge */}
               <div style={{
-                background: secondsRemaining < 300 ? 'rgba(239, 68, 68, 0.15)' : (isLight ? 'rgba(2, 132, 199, 0.1)' : 'rgba(59, 130, 246, 0.15)'),
-                border: secondsRemaining < 300 ? '1px solid rgba(239, 68, 68, 0.3)' : (isLight ? '1px solid rgba(2, 132, 199, 0.3)' : '1px solid rgba(59, 130, 246, 0.3)'),
-                color: secondsRemaining < 300 ? '#ef4444' : (isLight ? '#0284c7' : '#60a5fa'),
-                padding: '4px 12px',
+                background: secondsRemaining < 300 ? 'rgba(239, 68, 68, 0.15)' : t.innerCard,
+                border: secondsRemaining < 300 ? '1px solid #ef4444' : `1px solid ${t.innerBorder}`,
+                color: secondsRemaining < 300 ? '#ef4444' : t.text,
+                padding: '4px 10px',
                 borderRadius: '8px',
                 fontSize: '0.85rem',
                 fontWeight: 700,
-                fontVariantNumeric: 'tabular-nums'
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px'
               }}>
-                ⏳ Còn lại: {formatTime(secondsRemaining)}
+                ⏱️ {formatTime(secondsRemaining)}
               </div>
             </div>
 
-            {/* Time progress bar */}
-            <div style={{
-              width: '100%',
-              height: '6px',
-              background: isLight ? '#e2e8f0' : 'rgba(255, 255, 255, 0.1)',
-              borderRadius: '999px',
-              overflow: 'hidden',
-              marginBottom: '20px'
-            }}>
-              <div style={{
-                width: `${(secondsRemaining / (maxMinutes * 60)) * 100}%`,
-                height: '100%',
-                background: secondsRemaining < 300 ? '#ef4444' : '#10b981',
-                transition: 'width 1s linear'
-              }} />
+            <div style={{ marginTop: '12px', fontSize: '0.82rem', color: t.textMuted, display: 'flex', justifyContent: 'space-between' }}>
+              <span>Máy in: <b>{session.printerName}</b></span>
+              <span>IP: <code style={{ color: isLight ? '#0284c7' : '#38bdf8' }}>{session.printerRef}</code></span>
             </div>
 
-            {/* Main Live Counter Showcase */}
+            {lastPollError && (
+              <div style={{
+                marginTop: '10px',
+                padding: '8px 12px',
+                borderRadius: '8px',
+                background: 'rgba(239, 68, 68, 0.1)',
+                color: '#ef4444',
+                fontSize: '0.75rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                ⚠️ {lastPollError}
+              </div>
+            )}
+
+            {/* Showcase Page Counter */}
             <div style={{
+              margin: '20px 0',
+              padding: '24px 16px',
+              borderRadius: '16px',
               background: t.showcaseBg,
               border: `1px solid ${t.innerBorder}`,
-              borderRadius: '16px',
-              padding: '20px',
-              textAlign: 'center',
-              marginBottom: '20px',
-              boxShadow: isLight ? 'inset 0 2px 4px rgba(0,0,0,0.02)' : 'none'
+              textAlign: 'center'
             }}>
-              <div style={{ fontSize: '0.8rem', color: t.textMuted, textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}>
-                Tổng số trang đã in trong phiên
+              <div style={{ fontSize: '0.85rem', color: t.textMuted, fontWeight: 600, letterSpacing: '0.5px' }}>
+                TỔNG SỐ TRANG ĐÃ IN TRONG PHIÊN
               </div>
               <div style={{
-                fontSize: '3.6rem',
+                fontSize: '3.8rem',
                 fontWeight: 900,
-                color: t.text,
-                margin: '4px 0',
-                lineHeight: 1,
-                fontVariantNumeric: 'tabular-nums',
-                textShadow: isLight ? 'none' : '0 4px 20px rgba(16, 185, 129, 0.3)'
+                color: isLight ? '#0284c7' : '#38bdf8',
+                lineHeight: 1.1,
+                margin: '8px 0',
+                letterSpacing: '-1px'
               }}>
                 {printedTotal}
               </div>
-              <div style={{ fontSize: '1.05rem', color: isLight ? '#059669' : '#10b981', fontWeight: 800 }}>
-                Tạm tính: {totalCost.toLocaleString()} đ
+              <div style={{ fontSize: '0.8rem', color: t.textMuted }}>
+                Số đếm ban đầu: <b>{session.initialCounter.total}</b> ➔ Hiện tại: <b>{session.currentCounter.total}</b>
               </div>
             </div>
 
-            {/* B&W vs Color breakdown */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '24px' }}>
+            {/* Detailed counter breakdown */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: '10px',
+              marginBottom: '20px'
+            }}>
               <div style={{
                 background: t.innerCard,
                 border: `1px solid ${t.innerBorder}`,
                 borderRadius: '12px',
-                padding: '12px',
-                textAlign: 'center'
+                padding: '12px'
               }}>
-                <div style={{ fontSize: '0.75rem', color: t.textMuted, fontWeight: 500 }}>Trắng đen (B&W)</div>
-                <div style={{ fontSize: '1.6rem', fontWeight: 800, color: t.text, marginTop: '2px' }}>
-                  {printedBw}
+                <div style={{ fontSize: '0.75rem', color: t.textMuted }}>Đen trắng (B&W)</div>
+                <div style={{ fontSize: '1.4rem', fontWeight: 800, marginTop: '2px' }}>
+                  {printedBw} <span style={{ fontSize: '0.75rem', fontWeight: 500 }}>trang</span>
                 </div>
-                <div style={{ fontSize: '0.72rem', color: t.textMuted }}>
+                <div style={{ fontSize: '0.72rem', color: t.textMuted, marginTop: '2px' }}>
                   {(printedBw * priceBw).toLocaleString()} đ
                 </div>
               </div>
@@ -747,20 +1131,36 @@ export default function PayItPage() {
                 background: t.innerCard,
                 border: `1px solid ${t.innerBorder}`,
                 borderRadius: '12px',
-                padding: '12px',
-                textAlign: 'center'
+                padding: '12px'
               }}>
-                <div style={{ fontSize: '0.75rem', color: t.textMuted, fontWeight: 500 }}>In Màu (Color)</div>
-                <div style={{ fontSize: '1.6rem', fontWeight: 800, color: isLight ? '#0284c7' : '#38bdf8', marginTop: '2px' }}>
-                  {printedColor}
+                <div style={{ fontSize: '0.75rem', color: t.textMuted }}>Màu (Color)</div>
+                <div style={{ fontSize: '1.4rem', fontWeight: 800, color: isLight ? '#0284c7' : '#38bdf8', marginTop: '2px' }}>
+                  {printedColor} <span style={{ fontSize: '0.75rem', fontWeight: 500 }}>trang</span>
                 </div>
-                <div style={{ fontSize: '0.72rem', color: t.textMuted }}>
+                <div style={{ fontSize: '0.72rem', color: t.textMuted, marginTop: '2px' }}>
                   {(printedColor * priceColor).toLocaleString()} đ
                 </div>
               </div>
             </div>
 
-            {/* Finish Early Button */}
+            {/* Temporary Amount Preview */}
+            <div style={{
+              background: isLight ? 'rgba(16, 185, 129, 0.08)' : 'rgba(16, 185, 129, 0.05)',
+              border: '1px solid rgba(16, 185, 129, 0.25)',
+              borderRadius: '12px',
+              padding: '12px 16px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '20px'
+            }}>
+              <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>Tạm tính hiện tại:</span>
+              <span style={{ fontSize: '1.2rem', fontWeight: 800, color: isLight ? '#059669' : '#10b981' }}>
+                {totalCost.toLocaleString()} VNĐ
+              </span>
+            </div>
+
+            {/* Early Termination Button */}
             <button
               onClick={handleFinishEarly}
               style={{
@@ -770,8 +1170,9 @@ export default function PayItPage() {
                 border: 'none',
                 background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
                 color: '#fff',
-                fontSize: '1.1rem',
-                fontWeight: 700,
+                fontSize: '1.05rem',
+                fontWeight: 800,
+                letterSpacing: '0.5px',
                 cursor: 'pointer',
                 boxShadow: '0 8px 20px rgba(239, 68, 68, 0.35)',
                 transition: 'all 0.2s'
@@ -780,15 +1181,13 @@ export default function PayItPage() {
               🛑 HOÀN TẤT IN & THANH TOÁN (KẾT THÚC SỚM)
             </button>
 
-            {lastPollError && (
-              <div style={{ marginTop: '10px', fontSize: '0.72rem', color: '#ef4444', textAlign: 'center', fontWeight: 500 }}>
-                ⚠️ {lastPollError}
-              </div>
-            )}
+            <div style={{ textAlign: 'center', marginTop: '10px', fontSize: '0.75rem', color: t.textMuted }}>
+              Bấm nút trên khi bạn đã in xong để chốt số trang & thanh toán
+            </div>
           </div>
         )}
 
-        {/* ── STATE 3: COMPLETED OR TIMEOUT (Receipt & Payment) ── */}
+        {/* ── STATE 3: COMPLETED OR TIMEOUT ── */}
         {(status === 'completed' || status === 'timeout') && session && (
           <div style={{
             background: t.cardBg,
@@ -808,14 +1207,14 @@ export default function PayItPage() {
                 fontSize: '0.8rem',
                 fontWeight: 700
               }}>
-                {status === 'timeout' ? `⏱️ Hết thời gian phiên (${maxMinutes} phút)` : '✅ Đã hoàn tất phiên in sớm'}
+                {status === 'timeout' ? `⏱️ Hết thời gian phiên (${maxMinutes} phút)` : '✅ Đã hoàn tất phiên in'}
               </div>
 
               <h2 style={{ margin: '10px 0 2px 0', fontSize: '1.3rem', fontWeight: 800, color: t.text }}>
                 Hóa đơn thanh toán
               </h2>
               <div style={{ fontSize: '0.75rem', color: t.textMuted }}>
-                Mã phiên: <code style={{ color: isLight ? '#0284c7' : '#38bdf8', fontWeight: 700 }}>{session.sessionId}</code>
+                Máy: <b>{session.printerName}</b> ({session.printerRef}) • Mã: <code style={{ color: isLight ? '#0284c7' : '#38bdf8', fontWeight: 700 }}>{session.sessionId}</code>
               </div>
             </div>
 
