@@ -167,7 +167,8 @@ export default function PayItPage() {
 
       // Auto-resolution logic:
       const targetQueryIp = searchParams.get('ip') || (initialRef.includes('.') ? initialRef : '');
-      const targetQueryMac = searchParams.get('mac') || '';
+      const rawQueryMac = searchParams.get('mac') || searchParams.get('mac_id') || searchParams.get('macId') || (initialRef.includes(':') || initialRef.includes('-') ? initialRef : '');
+      const targetQueryMac = rawQueryMac.toLowerCase().replace(/[:-]/g, '');
 
       if (targetQueryIp) {
         const found = list.find((p) => p.ip === targetQueryIp);
@@ -181,11 +182,13 @@ export default function PayItPage() {
           setCustomIpInput(targetQueryIp);
         }
       } else if (targetQueryMac) {
-        const found = list.find((p) => p.macId?.toLowerCase() === targetQueryMac.toLowerCase());
+        const found = list.find((p) => (p.macId || '').toLowerCase().replace(/[:-]/g, '') === targetQueryMac);
         if (found) {
           setPrinterIp(found.ip);
           setPrinterRef(found.ip);
           setPrinterName(found.name);
+        } else {
+          setPrinterRef(rawQueryMac);
         }
       } else {
         // Check localStorage
@@ -227,9 +230,15 @@ export default function PayItPage() {
       setPrinterName(found.name);
       localStorage.setItem('payit_selected_printer_ip', found.ip);
 
-      // Update URL search param seamlessly without reload
+      // Update URL search param seamlessly without reload (prefer permanent macId)
       const newUrl = new URL(window.location.href);
-      newUrl.searchParams.set('ip', found.ip);
+      if (found.macId) {
+        newUrl.searchParams.set('mac', found.macId);
+        newUrl.searchParams.delete('ip');
+      } else {
+        newUrl.searchParams.set('ip', found.ip);
+        newUrl.searchParams.delete('mac');
+      }
       window.history.replaceState({}, '', newUrl.toString());
     }
   };
@@ -536,8 +545,12 @@ export default function PayItPage() {
   const qrDescription = encodeURIComponent(session?.sessionId || 'GOXPRINT-PAYIT');
   const vietQrUrl = `https://img.vietqr.io/image/${bankCode}-${bankAccount}-compact2.png?amount=${totalCost}&addInfo=${qrDescription}&accountName=${encodeURIComponent(bankOwner)}`;
 
-  // Link for this printer to generate QR sticker
-  const printerDirectUrl = `https://agentapi.quanlymay.com/pay?ip=${encodeURIComponent(printerIp)}`;
+  // Link for this printer to generate QR sticker (Prioritize permanent MAC address over dynamic IP)
+  const currentPrinterObj = availablePrinters.find((p) => (printerRef && p.macId === printerRef) || p.ip === printerIp);
+  const activeMac = currentPrinterObj?.macId || (printerRef.includes(':') || printerRef.includes('-') ? printerRef : '');
+  const printerDirectUrl = activeMac
+    ? `https://agentapi.quanlymay.com/pay?mac=${encodeURIComponent(activeMac)}`
+    : `https://agentapi.quanlymay.com/pay?ip=${encodeURIComponent(printerIp)}`;
   const printerStickerQrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(printerDirectUrl)}`;
 
   const handleCopyLink = () => {
